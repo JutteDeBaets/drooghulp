@@ -18,7 +18,7 @@ def main():
     _ensure_adafruit_pi_platform()
 
     DHT_SENSOR = Adafruit_DHT.DHT11
-    DHT_PIN = 4
+    DHT_PIN = 7
     sensor_driver_error_reported = False
 
     while True:
