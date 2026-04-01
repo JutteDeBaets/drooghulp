@@ -2,9 +2,20 @@
 Main entry point for the Drooghulp project.
 """
 
+import time
+
+import Adafruit_DHT
+
+
+def _ensure_adafruit_pi_platform():
+    """Fallback for newer Pi models not detected by legacy Adafruit_DHT."""
+    detector = Adafruit_DHT.common.platform_detect
+    if detector.pi_version() is None:
+        detector.pi_version = lambda: 3
+        detector.platform_detect = lambda: detector.RASPBERRY_PI
+
 def main():
-    import Adafruit_DHT
-    import time
+    _ensure_adafruit_pi_platform()
 
     DHT_SENSOR = Adafruit_DHT.DHT11
     DHT_PIN = 4
