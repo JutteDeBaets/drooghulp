@@ -4,7 +4,7 @@ Main entry point for the Drooghulp project.
 
 import time
 
-import Adafruit_DHT
+import Adafruit_DHT11
 
 
 def _ensure_adafruit_pi_platform():
