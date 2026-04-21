@@ -5,3 +5,4 @@ PyQt5
 adafruit-circuitpython-dht
 adafruit-blinka
 gpiozero
+spidev
