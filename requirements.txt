@@ -2,4 +2,7 @@
 # Add your project dependencies here
 # Example: requests==2.28.1
 PyQt5
-Adafruit_DHT
+adafruit-circuitpython-dht
+adafruit-blinka
+gpiozero
+spidev
