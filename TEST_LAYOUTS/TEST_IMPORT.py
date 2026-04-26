@@ -1,5 +1,8 @@
 import customtkinter as ctk
 from datetime import datetime
+import json
+from urllib.request import urlopen
+
 
 class LaundryApp(ctk.CTk):
     def __init__(self):
@@ -31,6 +34,7 @@ class LaundryApp(ctk.CTk):
         self.current_timer = None
         self.sidebar_buttons = {}
         self.setup_sidebar()
+        self.sidebar_visible = True
 
         # Frames initialiseren
         self.home_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -38,33 +42,88 @@ class LaundryApp(ctk.CTk):
         self.drying_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.confirm_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.timer_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.compare_frame = ctk.CTkFrame(self, fg_color="transparent")
 
         self.setup_home_screen()
         self.setup_selection_screen()
         self.setup_bovenhoek()
         
         self.show_home()
+        self.ham_btn = ctk.CTkButton(self, 
+                                     text="≡", 
+                                     width=40,           # Iets compacter
+                                     height=40, 
+                                     fg_color=self.bg_dark, 
+                                     text_color="white", 
+                                     font=("Arial", 30),
+                                     corner_radius=10,    # Mooie ronde hoeken zoals je andere knoppen
+                                     border_width=0,
+                                     command=self.toggle_sidebar)
+
 
     def setup_sidebar(self):
+        # 1. De sidebar container (vastgezet op 80px breedte)
         self.sidebar = ctk.CTkFrame(self, width=80, corner_radius=0, fg_color=self.bg_dark)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        
+        self.sidebar.grid_propagate(False) # Zorgt dat de bar exact 80px blijft
+
+        # 2. De menu knop BOVENAAN in de sidebar
+        # We noemen deze menu_btn_sidebar om verwarring met de 'zwevende' knop te voorkomen
+        self.menu_btn_sidebar = ctk.CTkButton(self.sidebar, 
+                                     text="≡", 
+                                     width=40, 
+                                     height=40, 
+                                     fg_color=self.bg_dark, 
+                                     hover_color="#2d2f3f", 
+                                     text_color="white", 
+                                     font=("Arial", 32),
+                                     corner_radius=10,            # Maakt hem perfect vierkant
+                                     border_width=0,             # Verwijdert witte randjes
+                                     border_spacing=0,           # Kleur vult de volledige 80x80
+                                     command=self.toggle_sidebar)
+        self.menu_btn_sidebar.pack(side="top", anchor="n",pady=(20, 10))
+
+        # 3. De navigatie iconen
         menu_items = [
-            ("≡", "menu", None),
             ("✧", "home", self.show_home), 
             ("⚡", "energy", None),
-            ("⚖", "balance", None),
+            ("⚖", "balance", self.show_comparison),
             ("⌛", "timer", None),
             ("⚙", "settings", None)
         ]
 
         for icon, name, actie in menu_items:
-            btn = ctk.CTkButton(self.sidebar, text=icon, width=40, height=40, 
-                                fg_color="transparent", hover_color="#2d2f3f",
-                                text_color="white", font=("Arial", 24),
+            # We maken de iconen iets smaller dan de bar (40px) voor een mooie marge
+            btn = ctk.CTkButton(self.sidebar, 
+                                text=icon, 
+                                width=40, 
+                                height=40, 
+                                fg_color="transparent", 
+                                hover_color="#2d2f3f",
+                                text_color="white", 
+                                font=("Arial", 24),
                                 command=actie)
-            btn.pack(pady=15, padx=10)
+            
+            # De 'home' knop krijgt wat extra ruimte aan de bovenkant t.o.v. de hamburger
+            pady_val = (30, 15) if name == "home" else 15
+            btn.pack(pady=pady_val, padx=10)
+            
+            # Sla de knop op in de dictionary voor eventuele kleurveranderingen later
             self.sidebar_buttons[name] = btn
+
+    def toggle_sidebar(self):
+        if self.sidebar_visible:
+            self.sidebar.grid_forget()
+            self.sidebar_visible = False
+            # Toon de zwevende knop op de lege plek
+            self.ham_btn.place(x=20, y=20)
+            self.ham_btn.lift() # Zorg dat hij bovenop het homescherm ligt
+        else:
+            # Verberg de zwevende knop
+            self.ham_btn.place_forget()
+            # Toon de sidebar (waar de andere knop al in zit)
+            self.sidebar.grid(row=0, column=0, sticky="nsew")
+            self.sidebar_visible = True
 
     def update_sidebar_selection(self, active_name):
         for name, btn in self.sidebar_buttons.items():
@@ -72,21 +131,81 @@ class LaundryApp(ctk.CTk):
                 btn.configure(text_color=self.active_blue)
             else:
                 btn.configure(text_color="white")
+    def get_location_data(self):
+        import json
+        from urllib.request import urlopen
+        try:
+            with urlopen("http://ip-api.com/json/") as response:
+                data = json.load(response)
+                # We geven nu de stad én de coördinaten terug
+                return {
+                    "city": data.get("city", "Kortrijk"),
+                    "lat": data.get("lat", 50.828),
+                    "lon": data.get("lon", 3.265)
+                }
+        except:
+            return {"city": "Kortrijk", "lat": 50.828, "lon": 3.265}
+
+    def get_weather_data(self, lat, lon):
+        import json
+        from urllib.request import urlopen
+        try:
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+            with urlopen(url) as response:
+                data = json.load(response)
+                current = data["current_weather"]
+                
+                # We slaan de temperatuur op in de class zodat je er overal bij kan via self.huidige_temp
+                self.huidige_temp = f"{current['temperature']}°C"
+                
+                return current["weathercode"] # Geeft een getal terug (0=zonnig, 3=bewolkt, etc.)
+        except:
+            self.huidige_temp = "--°C"
+            return 0
+    
+    def get_weather_icon(self, code):
+        # 0 = Onbewolkt, 1-3 = Licht bewolkt, 45-48 = Mist, 51-67 = Regen, 71-77 = Sneeuw
+        if code == 0:
+            return "☀️"
+        elif 1 <= code <= 3:
+            return "☁️"
+        elif code >= 51:
+            return "🌧️"
+        else:
+            return "⛅"
 
     def setup_bovenhoek(self):
-        nu = datetime.now()
-        datum_tijd = nu.strftime("%a %d/%m, %H:%M")
-        self.weather_info = ctk.CTkFrame(self, fg_color="white", corner_radius=15, height=60)
-        self.weather_info.place(relx=0.97, rely=0.05, anchor="ne")
-        ctk.CTkLabel(self.weather_info, text="☀️", font=("Arial", 25), text_color="orange").pack(side="left", padx=(15, 5))
-        ctk.CTkLabel(self.weather_info, text=f"Kortrijk\n{datum_tijd}", 
-                     font=("Arial Bold", 12), text_color="gray", justify="left").pack(side="left", padx=(5, 15), pady=10)
+        # Data ophalen
+        locatie = self.get_location_data()
+        weather_code = self.get_weather_data(locatie["lat"], locatie["lon"])
+        icon = self.get_weather_icon(weather_code)
+        huidige_tijd = datetime.now().strftime("%a %d/%m, %H:%M")
+
+        # De witte container
+        self.weer_frame = ctk.CTkFrame(self, fg_color="white", corner_radius=15)
+        self.weer_frame.place(relx=0.97, rely=0.05, anchor="ne")
+
+        # Het icoon - nu in donkerblauw (#1a1c2c) voor een strakke look
+        self.weer_icon = ctk.CTkLabel(self.weer_frame, 
+                                      text=icon, 
+                                      font=("Arial", 28), 
+                                      text_color="#1a1c2c") 
+        self.weer_icon.pack(side="left", padx=(15, 2), pady=5)
+
+        # Tekst container (Stad + Tijd)
+        self.tekst_container = ctk.CTkFrame(self.weer_frame, fg_color="transparent")
+        self.tekst_container.pack(side="left", padx=(0, 15), pady=5)
+
+        ctk.CTkLabel(self.tekst_container, text=locatie["city"], 
+                     font=("Arial", 12), text_color="#666").pack(anchor="e")
+        ctk.CTkLabel(self.tekst_container, text=huidige_tijd, 
+                     font=("Arial", 12), text_color="#666").pack(anchor="e")
 
     def hide_all(self):
         if self.current_timer:
             self.after_cancel(self.current_timer)
             self.current_timer = None
-        for f in [self.home_frame, self.selection_frame, self.drying_frame, self.confirm_frame, self.timer_frame]:
+        for f in [self.home_frame, self.selection_frame, self.drying_frame, self.confirm_frame, self.timer_frame,self.compare_frame]:
             f.grid_forget()
 
     def show_home(self):
@@ -101,17 +220,32 @@ class LaundryApp(ctk.CTk):
 
     # --- SCHERM 1: HOME ---
     def setup_home_screen(self):
+        # Icoon en Tekst
         ctk.CTkLabel(self.home_frame, text="🌲", font=("Arial", 120), text_color=self.accent_green).pack(expand=True, pady=(60,0))
         ctk.CTkLabel(self.home_frame, text="Hang de was buiten", font=("Arial Bold", 42), text_color="black").pack(expand=True)
-        ctk.CTkButton(self.home_frame, text="KLIK VOOR DROOGTYPE", fg_color=self.accent_green, hover_color="#00b34a",text_color="white",
-                      height=60, width=400, corner_radius=15, font=("Arial Bold", 18), command=self.show_selection).pack(expand=True, pady=(0, 60))
+        
+        # --- CONTAINER VOOR DE KNOPPEN ---
+        button_container = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        button_container.pack(expand=True, pady=(0, 60))
+
+        # Knop 1: Droogtype (Links)
+        ctk.CTkButton(button_container, text="TIMER INSTELLEN", 
+                      fg_color=self.accent_green, hover_color="#00b34a", text_color="white",
+                      height=60, width=150, corner_radius=15, font=("Arial Bold", 18), 
+                      command=self.show_selection).pack(side="left", padx=10)
+
+        # Knop 2: Vergelijking (Rechts)
+        ctk.CTkButton(button_container, text="VERGELIJKING", 
+                      fg_color="#4a5568", hover_color="#2d3748", text_color="white",
+                      height=60, width=150, corner_radius=15, font=("Arial Bold", 18), 
+                      command=self.show_comparison).pack(side="left", padx=10)
 
     # --- SCHERM 2: SELECTIE WAS-SOORT ---
     def setup_selection_screen(self):
         ctk.CTkButton(self.selection_frame, text="←", width=40, height=40, fg_color="white", text_color="black", 
                       command=self.show_home).place(relx=0.05, rely=0.05)
         
-        ctk.CTkLabel(self.selection_frame, text="Welk type was?", font=("Arial Bold", 32), text_color="white").pack(pady=(60, 40))
+        ctk.CTkLabel(self.selection_frame, text="Voor welk type was wil je een timer zetten?", font=("Arial Bold", 32), text_color="black").pack(pady=(60, 40))
         
         container = ctk.CTkFrame(self.selection_frame, fg_color="transparent")
         container.pack(expand=True, fill="both", padx=40)
@@ -285,6 +419,59 @@ class LaundryApp(ctk.CTk):
     def final_cancel(self):
         self.close_popup()
         self.show_home()
+
+    def show_comparison(self):
+        #"""Bereidt het vergelijkingsscherm voor en toont het"""
+        self.hide_all()
+        # Maak het scherm eerst leeg (verversen)
+        for widget in self.compare_frame.winfo_children():
+            widget.destroy()
+        
+        # Roep jouw aangepaste interface functie aan
+        self.build_comparison_ui()
+        
+        self.compare_frame.grid(row=0, column=1, sticky="nsew")
+        self.update_sidebar_selection("balance")
+
+    def build_comparison_ui(self):
+        #"""Jouw originele code, nu als methode van de class"""
+        # Hoofdcontainer (gebruik self.compare_frame ipv een nieuwe)
+        inner_frame = ctk.CTkFrame(self.compare_frame, fg_color= "#f0f8ff" , corner_radius=0)
+        inner_frame.pack(fill="both", expand=True)
+
+        inner_frame.grid_columnconfigure((0, 1, 2), weight=1)
+    
+        titel = ctk.CTkLabel(inner_frame, text="Vergelijking", font=("Arial Bold", 38), text_color="black")
+        titel.grid(row=0, column=0, columnspan=3, pady=(30, 40))
+
+        data_lijst = [
+            {"t": "Buiten drogen", "d": "droogtijd 4u", "k": "Gratis", "temp": "16°C", "v": "vochtigheid 95%", "ex": "Morgen om 15.30u\ngaat het regenen", "ex_c": "#f39c12", "h": False},
+            {"t": "Binnen drogen", "d": "droogtijd 9u", "k": "Gratis", "temp": "20°C", "v": "vochtigheid 45%", "ex": "Verluchten\naangeraden", "ex_c": "transparent", "h": False},
+            {"t": "Droogkast", "d": "droogtijd 1u", "k": "kost: €0,81", "temp": "/", "v": "/", "ex": "Daluur om\n24.00u  €0,52", "ex_c": "transparent", "h": True}
+        ]
+
+        for i, item in enumerate(data_lijst):
+            kolom = ctk.CTkFrame(inner_frame, fg_color="transparent")
+            kolom.grid(row=1, column=i, sticky="nsew", padx=10)
+
+            ctk.CTkLabel(kolom, text=item["t"], font=("Arial Bold", 22), text_color="black").pack()
+            ctk.CTkFrame(kolom, height=2, width=140, fg_color="black").pack(pady=10)
+
+            tijd_kleur = "#27ae60" if item["h"] else "transparent"
+            ctk.CTkLabel(kolom, text=item["d"], font=("Arial", 18), fg_color=tijd_kleur, corner_radius=6, width=160, height=32).pack(pady=5)
+
+            ctk.CTkLabel(kolom, text=item["k"], font=("Arial Bold", 18), fg_color="#27ae60", corner_radius=6, width=180, height=35).pack(pady=15)
+
+            ctk.CTkLabel(kolom, text=item["temp"], font=("Arial", 18), text_color="black").pack()
+            ctk.CTkLabel(kolom, text=item["v"], font=("Arial", 18), text_color="black").pack(pady=5)
+
+            if item["ex"]:
+                box = ctk.CTkFrame(kolom, fg_color=item["ex_c"] if item["ex_c"] != "transparent" else "transparent", corner_radius=8)
+                box.pack(pady=20, padx=10)
+                ctk.CTkLabel(box, text=item["ex"], font=("Arial", 15), text_color="black", padx=10, pady=5).pack()
+
+            if i < 2:
+                ctk.CTkFrame(inner_frame, width=2, fg_color="#444").grid(row=1, column=i, sticky="nse", pady=(0, 40))
 
 if __name__ == "__main__":
     app = LaundryApp()
