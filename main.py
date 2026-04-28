@@ -139,8 +139,6 @@ GPIO_D0 = 23
 VREF = 3.3
 HALF_CLOCK_DELAY_SECONDS = 0.00001
 
-# Debug: set to a positive number to sample sound only and exit.
-SOUND_DEBUG_SECONDS = 5
 
 
 # Motion sensor (BOARD pin 8 -> BCM 14)
@@ -215,28 +213,7 @@ def main():
     last_temperature = None
     last_humidity = None
 
-    if SOUND_DEBUG_SECONDS > 0:
-        end_time = time.monotonic() + SOUND_DEBUG_SECONDS
-        min_val = 4095
-        max_val = 0
-        samples = 0
-        while time.monotonic() < end_time:
-            if spi is not None:
-                value = read_pmodad1_channel0_spi(spi)
-            else:
-                value = read_pmodad1_channel0_bitbang()
-            min_val = min(min_val, value)
-            max_val = max(max_val, value)
-            samples += 1
-            time.sleep(0.02)
-        print(
-            f"Sound debug ({SOUND_DEBUG_SECONDS}s): samples={samples} "
-            f"min={min_val} max={max_val}"
-        )
-        if spi is not None:
-            spi.close()
-        GPIO.cleanup((GPIO_CLK, GPIO_CS, GPIO_D0, MOTION_BCM_PIN))
-        return
+
 
     try:
         while True:
