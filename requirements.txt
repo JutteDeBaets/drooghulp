@@ -1,7 +1,13 @@
 # requirements.txt
 # Add your project dependencies here
 # Example: requests==2.28.1
+customtkinter
+Pillow
 PyQt5
+adafruit-circuitpython-dht
+adafruit-blinka
+gpiozero
+spidev
 adafruit-circuitpython-dht
 adafruit-blinka
 gpiozero

@@ -1,26 +1,121 @@
-"""Read a Grove Sound Sensor v1.6 via PmodAD1 using custom GPIO wiring."""
+"""Read Grove Sound + Motion + DHT sensors with existing wiring."""
 
 import time
 
 try:
-    from gpiozero import DigitalInputDevice, DigitalOutputDevice
+    from gpiozero import DigitalInputDevice, DigitalOutputDevice, InputDevice
 except ImportError as err:
     raise SystemExit(
         "gpiozero is not installed. Install it with 'pip install gpiozero' or 'sudo apt install python3-gpiozero'."
     ) from err
 
 
-# Corrected wiring (BCM numbering):
-# CLK -> GPIO11 (BOARD pin 23)
-# CS  -> GPIO24 (BOARD pin 18)
-# D0  -> GPIO23 (BOARD pin 16)
+BOARD_TO_BCM = {
+    3: 2,
+    5: 3,
+    7: 4,
+    8: 14,
+    10: 15,
+    11: 17,
+    12: 18,
+    13: 27,
+    15: 22,
+    16: 23,
+    18: 24,
+    19: 10,
+    21: 9,
+    22: 25,
+    23: 11,
+    24: 8,
+    26: 7,
+    27: 0,
+    28: 1,
+    29: 5,
+    31: 6,
+    32: 12,
+    33: 13,
+    35: 19,
+    36: 16,
+    37: 26,
+    38: 20,
+    40: 21,
+}
+
+
+def resolve_bcm_pin(pin, numbering_mode):
+    """Convert a BOARD pin to BCM if needed."""
+    mode = numbering_mode.upper()
+    if mode == "BCM":
+        return pin
+    if mode == "BOARD":
+        if pin not in BOARD_TO_BCM:
+            raise ValueError(f"BOARD pin {pin} cannot be mapped to BCM.")
+        return BOARD_TO_BCM[pin]
+    raise ValueError("PIN_NUMBERING must be either 'BOARD' or 'BCM'.")
+
+
+def _build_reader(sensor_name, bcm_pin):
+    """Try legacy Adafruit_DHT first, then CircuitPython DHT."""
+    adafruit_dht_error = None
+
+    try:
+        import Adafruit_DHT
+
+        sensor = getattr(Adafruit_DHT, sensor_name)
+
+        def _legacy_read():
+            return Adafruit_DHT.read_retry(sensor, bcm_pin, retries=3, delay_seconds=1)
+
+        return _legacy_read, "Adafruit_DHT"
+    except Exception as err:
+        adafruit_dht_error = err
+
+    try:
+        import adafruit_dht
+        import board
+
+        board_pin_name = f"D{bcm_pin}"
+        if not hasattr(board, board_pin_name):
+            raise RuntimeError(f"board.{board_pin_name} is not available on this device.")
+
+        board_pin = getattr(board, board_pin_name)
+        if sensor_name == "DHT11":
+            sensor = adafruit_dht.DHT11(board_pin, use_pulseio=False)
+        else:
+            sensor = adafruit_dht.DHT22(board_pin, use_pulseio=False)
+
+        def _circuit_read():
+            try:
+                return sensor.humidity, sensor.temperature
+            except RuntimeError:
+                return None, None
+
+        return _circuit_read, "adafruit-circuitpython-dht"
+    except Exception as circuit_error:
+        raise RuntimeError(
+            "No supported DHT backend is available. "
+            "Install Adafruit_DHT or adafruit-circuitpython-dht. "
+            f"Adafruit_DHT error: {adafruit_dht_error}; "
+            f"CircuitPython error: {circuit_error}"
+        )
+
+
+# Grove Sound Sensor v1.6 via PmodAD1 (BCM numbering)
 GPIO_CLK = 11
 GPIO_CS = 24
 GPIO_D0 = 23
-
-SAMPLE_INTERVAL_SECONDS = 0.1
 VREF = 3.3
 HALF_CLOCK_DELAY_SECONDS = 0.00001
+
+
+# Motion sensor (BOARD pin 8 -> BCM 14)
+MOTION_BCM_PIN = 14
+
+
+# DHT sensor (BOARD pin 7 -> BCM 4)
+DHT_SENSOR_TYPE = "DHT11"
+DHT_PIN = 7
+DHT_PIN_MODE = "BOARD"
 
 
 def read_pmodad1_channel0_bitbang(cs, clk, d0):
@@ -48,22 +143,53 @@ def main():
     clk = DigitalOutputDevice(GPIO_CLK, active_high=True, initial_value=False)
     cs = DigitalOutputDevice(GPIO_CS, active_high=True, initial_value=True)
     d0 = DigitalInputDevice(GPIO_D0)
+    motion = InputDevice(MOTION_BCM_PIN, pull_up=False)
+
+    bcm_pin = resolve_bcm_pin(DHT_PIN, DHT_PIN_MODE)
+    read_dht, backend_name = _build_reader(DHT_SENSOR_TYPE, bcm_pin)
+    sensor_driver_error_reported = False
 
     print("Reading Grove Sound Sensor v1.6 via PmodAD1")
     print("Wiring: CLK=GPIO11(pin23), CS=GPIO24(pin18), D0=GPIO23(pin16)")
+    print(f"Motion sensor: BCM {MOTION_BCM_PIN} (BOARD 8)")
+    print(f"DHT: {DHT_SENSOR_TYPE}, pin mode: {DHT_PIN_MODE}, BCM {bcm_pin}")
+    print(f"Using DHT backend: {backend_name}")
+
+    next_dht_time = 0.0
 
     try:
         while True:
             value = read_pmodad1_channel0_bitbang(cs, clk, d0)
             voltage = (value / 4095.0) * VREF
-            print(f"raw={value:4d}  voltage={voltage:0.3f} V")
-            time.sleep(SAMPLE_INTERVAL_SECONDS)
+            motion_state = int(motion.is_active)
+
+            humidity = None
+            temperature = None
+            now = time.monotonic()
+            if now >= next_dht_time:
+                next_dht_time = now + 2.0
+                try:
+                    humidity, temperature = read_dht()
+                except Exception as err:
+                    if not sensor_driver_error_reported:
+                        print(f"DHT driver error: {err}")
+                        sensor_driver_error_reported = True
+
+            temp_txt = "--" if temperature is None else f"{temperature:0.1f}"
+            hum_txt = "--" if humidity is None else f"{humidity:0.1f}"
+            print(
+                "sound_raw={raw:4d} sound_v={v:0.3f}V motion={motion} "
+                "temp={temp}C humidity={hum}%"
+                .format(raw=value, v=voltage, motion=motion_state, temp=temp_txt, hum=hum_txt)
+            )
+            time.sleep(0.5)
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
         cs.close()
         clk.close()
         d0.close()
+        motion.close()
 
 
 if __name__ == "__main__":
