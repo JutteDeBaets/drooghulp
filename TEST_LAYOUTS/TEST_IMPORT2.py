@@ -208,8 +208,8 @@ class LaundryApp(ctk.CTk):
                 raise ValueError("DHT22 gaf None terug")
         except Exception as e:
             print(f"Fout bij uitlezen DHT22: {e}")
-            temp  = 0.0
-            vocht = 0.0
+            temp  = 15.0
+            vocht = 80.0
 
         return {
             "temp":   round(temp,  1),
