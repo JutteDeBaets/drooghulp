@@ -5,6 +5,50 @@ from urllib.request import urlopen
 
 
 class LaundryApp(ctk.CTk):
+    def get_internal_sensor_data(self):
+        try:
+            # Hier komt de code die je waarschijnlijk al in een apart script hebt
+            # Bijvoorbeeld voor een DHT22 of BME280:
+            
+            
+            temp_binnen = 15
+            vocht_binnen = 80
+            
+            return {"temp": temp_binnen, "vocht": vocht_binnen}
+        except Exception as e:
+            print(f"Sensor fout: {e}")
+            return {"temp": 20, "vocht": 50} # Fallback
+    
+    STOF_FACTOREN = {
+    "Licht": 0.6,      # Bijv. sportkleding, dunne overhemden
+    "Gemiddeld": 1.0,  # Bijv. t-shirts, katoenen beddengoed (de standaard)
+    "Zwaar": 1.5       # Bijv. jeans, handdoeken, truien
+    }
+    def bereken_droogtijd_volledig(self, temp, vocht, wind=0, is_buiten=True, stof_type="Gemiddeld"):
+        # We nemen een theoretische basis: 
+        # Een gemiddelde was op 20°C met 50% vocht duurt 4 uur (240 min).
+        basis_minuten = 240 
+        
+        # 1. Stof factor (Licht is sneller, Zwaar is trager)
+        stof_factor = self.STOF_FACTOREN.get(stof_type, 1.0)
+        
+        # 2. Temperatuur factor: hoe kouder, hoe trager. 
+        # Bij 10°C duurt het 1.5x langer dan bij 20°C.
+        temp_factor = max(0.5, 1 - (temp - 20) * 0.05)
+        
+        # 3. Luchtvochtigheid factor: boven 60% droogt het erg traag.
+        if vocht < 60:
+            vocht_factor = 1.0
+        else:
+            vocht_factor = 1 + ((vocht - 60) * 0.05)
+            
+        # 4. Wind factor: alleen buiten (max 40% sneller bij veel wind)
+        wind_factor = max(0.6, 1 - (wind * 0.02)) if is_buiten else 1.0
+        
+        # Totale berekening
+        totaal_uren = (basis_minuten * stof_factor * temp_factor * vocht_factor * wind_factor) / 60
+        return round(totaal_uren, 1)
+    
     def __init__(self):
         super().__init__()
 
@@ -25,6 +69,7 @@ class LaundryApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         # Data: Droogtijden [Buiten, Binnen, Droger]
+        self.huidig_stoftype = "Gemiddeld"
         self.drying_times = {
             "Licht": [5400, 14400, 2700],      
             "Gemiddeld": [8100, 19800, 4500], 
@@ -276,29 +321,61 @@ class LaundryApp(ctk.CTk):
     # --- SCHERM 3: DROOGOPTIES ---
     def show_drying_options(self, was_type):
         self.hide_all()
-        for widget in self.drying_frame.winfo_children(): widget.destroy()
+        self.huidig_stoftype = was_type # Onthoud de keuze
+        
+        for widget in self.drying_frame.winfo_children(): 
+            widget.destroy()
+            
         ctk.CTkButton(self.drying_frame, text="←", width=40, height=40, fg_color="white", text_color="black", 
                       command=self.show_selection).place(relx=0.05, rely=0.05)
 
-        tijden_sec = self.drying_times[was_type]
-        tijden_text = [f"~{s//3600}u {(s%3600)//60}m" for s in tijden_sec]
+        # --- STAP 1: DATA EN SENSOREN OPHALEN ---
+        locatie = self.get_location_data()
+        self.get_weather_data(locatie["lat"], locatie["lon"])
+        binnen = self.get_internal_sensor_data()
         
-        # Icoon, Naam, Tijd, Kleur, Seconden, Hover-tint
-        opties = [("🌲", "Buiten", tijden_text[0], self.accent_green, tijden_sec[0], "#00b34a"),
-                  ("🏠", "Binnen", tijden_text[1], self.accent_orange, tijden_sec[1], "#e68f00"),
-                  ("🌀", "Droger", tijden_text[2], self.accent_red, tijden_sec[2], "#e63535")]
+        try:
+            temp_buiten = float(self.huidige_temp.replace('°C', ''))
+        except:
+            temp_buiten = 15.0
+        
+        # --- STAP 2: BEREKEN DE NIEUWE TIJDEN IN SECONDEN ---
+        # We berekenen alles in uren en doen x 3600 voor seconden
+        t_buiten_h = self.bereken_droogtijd(temp_buiten, 60, wind=10, is_buiten=True, stof_type=was_type)
+        t_binnen_h = self.bereken_droogtijd(binnen['temp'], binnen['vocht'], wind=0, is_buiten=False, stof_type=was_type)
+        
+        # Droogkast (basiswaarde uit je oude lijst pakken of vast zetten)
+        t_kast_h = round(self.drying_times[was_type][2] / 3600, 1)
+
+        # Zet om naar seconden voor je systeem
+        sec_buiten = int(t_buiten_h * 3600)
+        sec_binnen = int(t_binnen_h * 3600)
+        sec_kast = int(t_kast_h * 3600)
+
+        # UPDATE de centrale lijst zodat show_confirmation ook de juiste tijd krijgt!
+        self.drying_times[was_type] = [sec_buiten, sec_binnen, sec_kast]
+
+        # --- STAP 3: TEKST VOOR DE KAARTEN ---
+        def format_tijd(s):
+            return f"~{s//3600}u {(s%3600)//60}m"
+
+        opties = [
+            ("🌲", "Buiten", format_tijd(sec_buiten), self.accent_green, sec_buiten, "#00b34a"),
+            ("🏠", "Binnen", format_tijd(sec_binnen), self.accent_orange, sec_binnen, "#e68f00"),
+            ("🌀", "Droger", format_tijd(sec_kast), self.accent_red, sec_kast, "#e63535")
+        ]
 
         container = ctk.CTkFrame(self.drying_frame, fg_color="transparent")
         container.pack(expand=True, fill="both", padx=40, pady=100)
         container.grid_columnconfigure((0, 1, 2), weight=1)
 
         for i, (icon, label, t_txt, kleur, t_sec, h_kleur) in enumerate(opties):
+            # De 's=t_sec' zorgt dat de berekende seconden naar de volgende stap gaan
             btn = ctk.CTkButton(container, fg_color=kleur, hover_color=h_kleur, corner_radius=25, height=280, text="",
                                  command=lambda l=label, s=t_sec, k=kleur: self.show_confirmation(was_type, l, s, k))
             btn.grid(row=0, column=i, sticky="nsew", padx=15)
             btn.grid_columnconfigure(0, weight=1)
 
-            # DIKKE EN WITTE TEKST HIER:
             l1 = ctk.CTkLabel(btn, text=icon, font=("Arial Bold", 75), text_color="white")
             l1.grid(row=0, column=0, pady=(30,0))
             l2 = ctk.CTkLabel(btn, text=label, font=("Arial Bold", 24), text_color="white")
@@ -306,7 +383,8 @@ class LaundryApp(ctk.CTk):
             l3 = ctk.CTkLabel(btn, text=t_txt, font=("Arial Bold", 18), text_color="white")
             l3.grid(row=2, column=0, pady=(5, 30))
 
-            for lbl in [l1, l2, l3]: lbl.bind("<Button-1>", lambda e, b=btn: b.invoke())
+            for lbl in [l1, l2, l3]: 
+                lbl.bind("<Button-1>", lambda e, b=btn: b.invoke())
 
         self.drying_frame.grid(row=0, column=1, sticky="nsew")
 
@@ -434,22 +512,66 @@ class LaundryApp(ctk.CTk):
         self.update_sidebar_selection("balance")
 
     def build_comparison_ui(self):
-        #"""Jouw originele code, nu als methode van de class"""
-        # Hoofdcontainer (gebruik self.compare_frame ipv een nieuwe)
-        inner_frame = ctk.CTkFrame(self.compare_frame, fg_color= "#f0f8ff" , corner_radius=0)
+        inner_frame = ctk.CTkFrame(self.compare_frame, fg_color="#f0f8ff", corner_radius=0)
         inner_frame.pack(fill="both", expand=True)
-
         inner_frame.grid_columnconfigure((0, 1, 2), weight=1)
     
-        titel = ctk.CTkLabel(inner_frame, text="Vergelijking", font=("Arial Bold", 38), text_color="black")
-        titel.grid(row=0, column=0, columnspan=3, pady=(30, 40))
+        # --- DATA OPHALEN ---
+        locatie = self.get_location_data()
+        # We halen even de volledige weerdata op voor de berekening
+        # (Tip: in een later stadium kun je windkracht ook uit de API halen)
+        weer_code = self.get_weather_data(locatie["lat"], locatie["lon"])
+        try:
+            temp_buiten = float(self.huidige_temp.replace('°C', ''))
+        except (AttributeError, ValueError):
+            temp_buiten = 15.0
+        vocht_buiten = 60  # Je kunt dit later ook uit de API trekken
+        
+        binnen_data = self.get_internal_sensor_data()
+        
+        # Bereken de tijden voor de 3 opties op basis van het gekozen type
+        tijd_buiten = self.bereken_droogtijd(temp_buiten, vocht_buiten, wind=10, is_buiten=True, stof_type=self.huidig_stoftype)
+        tijd_binnen = self.bereken_droogtijd(binnen_data['temp'], binnen_data['vocht'], wind=0, is_buiten=False, stof_type=self.huidig_stoftype)
+        tijd_droger = round(self.drying_times[self.huidig_stoftype][2] / 3600, 1) # Droogkast uit je dictionary
 
+        titel = ctk.CTkLabel(inner_frame, text=f"Vergelijking ({self.huidig_stoftype} was)", font=("Arial Bold", 32), text_color="black")
+        titel.grid(row=0, column=0, columnspan=3, pady=(30, 20))
+
+        # --- DYNAMISCHE DATA LIJST ---
         data_lijst = [
-            {"t": "Buiten drogen", "d": "droogtijd 4u", "k": "Gratis", "temp": "16°C", "v": "vochtigheid 95%", "ex": "Morgen om 15.30u\ngaat het regenen", "ex_c": "#f39c12", "h": False},
-            {"t": "Binnen drogen", "d": "droogtijd 9u", "k": "Gratis", "temp": "20°C", "v": "vochtigheid 45%", "ex": "Verluchten\naangeraden", "ex_c": "transparent", "h": False},
-            {"t": "Droogkast", "d": "droogtijd 1u", "k": "kost: €0,81", "temp": "/", "v": "/", "ex": "Daluur om\n24.00u  €0,52", "ex_c": "transparent", "h": True}
+            {
+                "t": "Buiten drogen", 
+                "d": f"droogtijd {tijd_buiten}u", 
+                "k": "Gratis", 
+                "temp": f"{temp_buiten}°C", 
+                "v": f"vocht {vocht_buiten}%", 
+                "ex": "Gebaseerd op\nweerbericht", 
+                "ex_c": "#f39c12" if weer_code > 0 else "transparent", 
+                "h": tijd_buiten < tijd_binnen
+            },
+            {
+                "t": "Binnen drogen", 
+                "d": f"droogtijd {tijd_binnen}u", 
+                "k": "Gratis", 
+                "temp": f"{binnen_data['temp']}°C", 
+                "v": f"vocht {binnen_data['vocht']}%", 
+                "ex": "Sensor data\nvan Pi", 
+                "ex_c": "transparent", 
+                "h": tijd_binnen < tijd_buiten
+            },
+            {
+                "t": "Droogkast", 
+                "d": f"droogtijd {tijd_droger}u", 
+                "k": "kost: €0,81", 
+                "temp": "/", 
+                "v": "/", 
+                "ex": "Daluur om\n24.00u  €0,52", 
+                "ex_c": "transparent", 
+                "h": False
+            }
         ]
 
+        # De rest van je lus (for i, item in enumerate(data_lijst):) blijft hetzelfde...
         for i, item in enumerate(data_lijst):
             kolom = ctk.CTkFrame(inner_frame, fg_color="transparent")
             kolom.grid(row=1, column=i, sticky="nsew", padx=10)
@@ -457,10 +579,15 @@ class LaundryApp(ctk.CTk):
             ctk.CTkLabel(kolom, text=item["t"], font=("Arial Bold", 22), text_color="black").pack()
             ctk.CTkFrame(kolom, height=2, width=140, fg_color="black").pack(pady=10)
 
+            # Highlight de snelste optie (behalve de droogkast)
             tijd_kleur = "#27ae60" if item["h"] else "transparent"
-            ctk.CTkLabel(kolom, text=item["d"], font=("Arial", 18), fg_color=tijd_kleur, corner_radius=6, width=160, height=32).pack(pady=5)
+            tijd_txt_kleur = "white" if item["h"] else "black"
+            
+            ctk.CTkLabel(kolom, text=item["d"], font=("Arial", 18), text_color=tijd_txt_kleur, 
+                         fg_color=tijd_kleur, corner_radius=6, width=160, height=32).pack(pady=5)
 
-            ctk.CTkLabel(kolom, text=item["k"], font=("Arial Bold", 18), fg_color="#27ae60", corner_radius=6, width=180, height=35).pack(pady=15)
+            ctk.CTkLabel(kolom, text=item["k"], font=("Arial Bold", 18), text_color="white", 
+                         fg_color="#27ae60", corner_radius=6, width=180, height=35).pack(pady=15)
 
             ctk.CTkLabel(kolom, text=item["temp"], font=("Arial", 18), text_color="black").pack()
             ctk.CTkLabel(kolom, text=item["v"], font=("Arial", 18), text_color="black").pack(pady=5)
