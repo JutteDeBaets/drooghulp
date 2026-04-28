@@ -113,7 +113,7 @@ MOTION_BCM_PIN = 14
 
 
 # DHT sensor (BOARD pin 7 -> BCM 4)
-DHT_SENSOR_TYPE = "DHT11"
+DHT_SENSOR_TYPE = "DHT22"
 DHT_PIN = 7
 DHT_PIN_MODE = "BOARD"
 
@@ -157,6 +157,8 @@ def main():
     print(f"Using DHT backend: {backend_name}")
 
     next_dht_time = 0.0
+    last_temperature = None
+    last_humidity = None
 
     try:
         while True:
@@ -171,13 +173,18 @@ def main():
                 next_dht_time = now + 2.0
                 try:
                     humidity, temperature = read_dht()
+                    if humidity is not None and temperature is not None:
+                        last_humidity = humidity
+                        last_temperature = temperature
                 except Exception as err:
                     if not sensor_driver_error_reported:
                         print(f"DHT driver error: {err}")
                         sensor_driver_error_reported = True
 
-            temp_txt = "--" if temperature is None else f"{temperature:0.1f}"
-            hum_txt = "--" if humidity is None else f"{humidity:0.1f}"
+            temp_val = last_temperature if temperature is None else temperature
+            hum_val = last_humidity if humidity is None else humidity
+            temp_txt = "--" if temp_val is None else f"{temp_val:0.1f}"
+            hum_txt = "--" if hum_val is None else f"{hum_val:0.1f}"
             print(
                 "sound_raw={raw:4d} sound_v={v:0.3f}V motion={motion} "
                 "temp={temp}C humidity={hum}%"
