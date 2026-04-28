@@ -6,7 +6,7 @@ import time
 from urllib.request import urlopen
 import adafruit_dht
 import board
-from gpiozero import DigitalInputDevice, DigitalOutputDevice
+import RPi.GPIO as GPIO
 
 # ─────────────────────────────────────────────
 #  CONSTANTEN  (één plek om te wijzigen)
@@ -68,9 +68,11 @@ class LaundryApp(ctk.CTk):
         self.sidebar_visible = True
         self.popup_time_label = None
 
-        self.clk = DigitalOutputDevice(11, active_high=True, initial_value=False)
-        self.cs = DigitalOutputDevice(24, active_high=True, initial_value=True)
-        self.d0 = DigitalInputDevice(23)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        GPIO.setup(11, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(24, GPIO.OUT, initial=GPIO.HIGH)
+        GPIO.setup(23, GPIO.IN)
 
         # DHT22 op GPIO4 (BOARD pin 7) – pas aan indien anders bedraad
         self.dht = adafruit_dht.DHT22(board.D4)
@@ -108,6 +110,7 @@ class LaundryApp(ctk.CTk):
         if self.current_timer:
             self.after_cancel(self.current_timer)
         self.dht.exit()
+        GPIO.cleanup((11, 24, 23))
         self.destroy()
  
     # ─────────────────────────────────────────
@@ -176,17 +179,17 @@ class LaundryApp(ctk.CTk):
         16 bits worden uitgeschoven; de laatste 12 bits zijn de meting.
         """
         value = 0
-        self.cs.off()
+        GPIO.output(24, GPIO.LOW)
         time.sleep(HALF_CLOCK_DELAY)
 
         for _ in range(16):
-            self.clk.on()
+            GPIO.output(11, GPIO.HIGH)
             time.sleep(HALF_CLOCK_DELAY)
-            value = (value << 1) | int(self.d0.value)
-            self.clk.off()
+            value = (value << 1) | int(GPIO.input(23))
+            GPIO.output(11, GPIO.LOW)
             time.sleep(HALF_CLOCK_DELAY)
 
-        self.cs.on()
+        GPIO.output(24, GPIO.HIGH)
         return value & 0x0FFF
 
     def get_internal_sensor_data(self) -> dict:
