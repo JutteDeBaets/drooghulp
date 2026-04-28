@@ -9,6 +9,11 @@ except ImportError as err:
         "RPi.GPIO is not installed. Install it with 'pip install RPi.GPIO' or 'sudo apt install python3-rpi.gpio'."
     ) from err
 
+try:
+    import spidev
+except ImportError:
+    spidev = None
+
 
 BOARD_TO_BCM = {
     3: 2,
@@ -166,12 +171,32 @@ def read_pmodad1_channel0_bitbang():
     return value & 0x0FFF
 
 
+def read_pmodad1_channel0_spi(spi):
+    """Read a 12-bit sample from PmodAD1 using SPI (if available)."""
+    # ADCS7476 returns 16 bits; 12 LSBs are the sample.
+    hi, lo = spi.xfer2([0x00, 0x00])
+    value = ((hi << 8) | lo) & 0x0FFF
+    return value
+
+
 def main():
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(GPIO_CLK, GPIO.OUT, initial=GPIO.LOW)
     GPIO.setup(GPIO_CS, GPIO.OUT, initial=GPIO.HIGH)
-    GPIO.setup(GPIO_D0, GPIO.IN)
+    GPIO.setup(GPIO_D0, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     GPIO.setup(MOTION_BCM_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+    spi = None
+    if spidev is not None:
+        try:
+            spi = spidev.SpiDev()
+            spi.open(0, 0)
+            spi.max_speed_hz = 1000000
+            spi.mode = 0
+            print("Using spidev for sound sensor read")
+        except Exception as err:
+            spi = None
+            print(f"spidev unavailable, using bit-bang: {err}")
 
     bcm_pin = resolve_bcm_pin(DHT_PIN, DHT_PIN_MODE)
     read_dht, backend_name = _build_reader(DHT_SENSOR_TYPES, bcm_pin)
@@ -189,7 +214,10 @@ def main():
 
     try:
         while True:
-            value = read_pmodad1_channel0_bitbang()
+            if spi is not None:
+                value = read_pmodad1_channel0_spi(spi)
+            else:
+                value = read_pmodad1_channel0_bitbang()
             voltage = (value / 4095.0) * VREF
             motion_state = int(GPIO.input(MOTION_BCM_PIN))
 
@@ -221,6 +249,8 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        if spi is not None:
+            spi.close()
         GPIO.cleanup((GPIO_CLK, GPIO_CS, GPIO_D0, MOTION_BCM_PIN))
 
 
