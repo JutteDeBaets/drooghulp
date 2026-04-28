@@ -54,8 +54,8 @@ def resolve_bcm_pin(pin, numbering_mode):
     raise ValueError("PIN_NUMBERING must be either 'BOARD' or 'BCM'.")
 
 
-def _build_reader(sensor_name, bcm_pin):
-    """Prefer CircuitPython DHT, fallback to legacy Adafruit_DHT."""
+def _build_reader(sensor_names, bcm_pin):
+    """Prefer CircuitPython DHT with auto-fallback, then legacy Adafruit_DHT."""
     circuit_error = None
 
     try:
@@ -67,25 +67,52 @@ def _build_reader(sensor_name, bcm_pin):
             raise RuntimeError(f"board.{board_pin_name} is not available on this device.")
 
         board_pin = getattr(board, board_pin_name)
-        if sensor_name == "DHT11":
-            sensor = adafruit_dht.DHT11(board_pin, use_pulseio=False)
-        else:
-            sensor = adafruit_dht.DHT22(board_pin, use_pulseio=False)
+
+        sensor_types = list(sensor_names)
+        if not sensor_types:
+            sensor_types = ["DHT22"]
+
+        current_index = 0
+        failures = 0
+        max_failures = 3
+
+        def _make_sensor(sensor_type):
+            if sensor_type == "DHT11":
+                return adafruit_dht.DHT11(board_pin, use_pulseio=False)
+            return adafruit_dht.DHT22(board_pin, use_pulseio=False)
+
+        sensor = _make_sensor(sensor_types[current_index])
 
         def _circuit_read():
+            nonlocal sensor, current_index, failures
             try:
-                return sensor.humidity, sensor.temperature
+                humidity = sensor.humidity
+                temperature = sensor.temperature
+                if humidity is None or temperature is None:
+                    raise RuntimeError("DHT returned None")
+                failures = 0
+                return humidity, temperature
             except RuntimeError:
+                failures += 1
+                if failures >= max_failures:
+                    failures = 0
+                    current_index = (current_index + 1) % len(sensor_types)
+                    try:
+                        sensor.exit()
+                    except Exception:
+                        pass
+                    sensor = _make_sensor(sensor_types[current_index])
                 return None, None
 
-        return _circuit_read, "adafruit-circuitpython-dht"
+        label = "|".join(sensor_types)
+        return _circuit_read, f"adafruit-circuitpython-dht({label})"
     except Exception as err:
         circuit_error = err
 
     try:
         import Adafruit_DHT
 
-        sensor = getattr(Adafruit_DHT, sensor_name)
+        sensor = getattr(Adafruit_DHT, sensor_names[0])
 
         def _legacy_read():
             return Adafruit_DHT.read_retry(sensor, bcm_pin, retries=3, delay_seconds=1)
@@ -113,7 +140,7 @@ MOTION_BCM_PIN = 14
 
 
 # DHT sensor (BOARD pin 7 -> BCM 4)
-DHT_SENSOR_TYPE = "DHT22"
+DHT_SENSOR_TYPES = ["DHT22", "DHT11"]
 DHT_PIN = 7
 DHT_PIN_MODE = "BOARD"
 
@@ -147,13 +174,13 @@ def main():
     GPIO.setup(MOTION_BCM_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     bcm_pin = resolve_bcm_pin(DHT_PIN, DHT_PIN_MODE)
-    read_dht, backend_name = _build_reader(DHT_SENSOR_TYPE, bcm_pin)
+    read_dht, backend_name = _build_reader(DHT_SENSOR_TYPES, bcm_pin)
     sensor_driver_error_reported = False
 
     print("Reading Grove Sound Sensor v1.6 via PmodAD1")
     print("Wiring: CLK=GPIO11(pin23), CS=GPIO24(pin18), D0=GPIO23(pin16)")
     print(f"Motion sensor: BCM {MOTION_BCM_PIN} (BOARD 8)")
-    print(f"DHT: {DHT_SENSOR_TYPE}, pin mode: {DHT_PIN_MODE}, BCM {bcm_pin}")
+    print(f"DHT: {','.join(DHT_SENSOR_TYPES)}, pin mode: {DHT_PIN_MODE}, BCM {bcm_pin}")
     print(f"Using DHT backend: {backend_name}")
 
     next_dht_time = 0.0
