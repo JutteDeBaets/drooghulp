@@ -2,11 +2,19 @@ import customtkinter as ctk
 from datetime import datetime
 import json
 import threading
+import time
 from urllib.request import urlopen
- 
+import adafruit_dht
+import board
+from gpiozero import DigitalInputDevice, DigitalOutputDevice
+
 # ─────────────────────────────────────────────
 #  CONSTANTEN  (één plek om te wijzigen)
 # ─────────────────────────────────────────────
+# SPI bit-bang instellingen
+HALF_CLOCK_DELAY = 0.00001  # seconden
+VREF             = 3.3       # volt
+ 
 DEFAULT_CITY = "Kortrijk"
 DEFAULT_LAT   = 50.828
 DEFAULT_LON   = 3.265
@@ -59,7 +67,15 @@ class LaundryApp(ctk.CTk):
         self.sidebar_buttons = {}
         self.sidebar_visible = True
         self.popup_time_label = None
- 
+
+        self.clk = DigitalOutputDevice(11, active_high=True, initial_value=False)
+        self.cs = DigitalOutputDevice(24, active_high=True, initial_value=True)
+        self.d0 = DigitalInputDevice(23)
+
+        # DHT22 op GPIO4 (BOARD pin 7) – pas aan indien anders bedraad
+        self.dht = adafruit_dht.DHT22(board.D4)
+
+
         # Gecachte weerdata (gevuld door _load_weather_async)
         self.locatie    = {"city": DEFAULT_CITY, "lat": DEFAULT_LAT, "lon": DEFAULT_LON}
         self.huidige_temp = "--°C"
@@ -88,9 +104,10 @@ class LaundryApp(ctk.CTk):
         threading.Thread(target=self._load_weather_async, daemon=True).start()
  
     def on_closing(self):
-        """Veilig afsluiten: annuleer actieve timer."""
+        """Veilig afsluiten: annuleer actieve timer en sluit sensoren."""
         if self.current_timer:
             self.after_cancel(self.current_timer)
+        self.dht.exit()
         self.destroy()
  
     # ─────────────────────────────────────────
@@ -154,14 +171,51 @@ class LaundryApp(ctk.CTk):
     # ─────────────────────────────────────────
     #  SENSOR (intern)
     # ─────────────────────────────────────────
+    def read_pmodad1_bitbang(self) -> int:
+        """Lees 12-bit sample van PmodAD1 (ADCS7476) via software SPI.
+        16 bits worden uitgeschoven; de laatste 12 bits zijn de meting.
+        """
+        value = 0
+        self.cs.off()
+        time.sleep(HALF_CLOCK_DELAY)
+
+        for _ in range(16):
+            self.clk.on()
+            time.sleep(HALF_CLOCK_DELAY)
+            value = (value << 1) | int(self.d0.value)
+            self.clk.off()
+            time.sleep(HALF_CLOCK_DELAY)
+
+        self.cs.on()
+        return value & 0x0FFF
+
     def get_internal_sensor_data(self) -> dict:
-        """Vervang de hardcoded waarden door echte sensor-uitlezing."""
+        """Leest DHT22 (temp/vocht) en PmodAD1 geluidssensor uit."""
+        # --- Geluidssensor via PmodAD1 ---
         try:
-            # TODO: koppel hier je DHT22 / BME280
-            return {"temp": 15, "vocht": 80}
+            raw_value = self.read_pmodad1_bitbang()
+            voltage   = (raw_value / 4095.0) * VREF
+            geluid    = round(voltage, 3)
         except Exception as e:
-            print(f"Sensor fout: {e}")
-            return {"temp": 20, "vocht": 50}
+            print(f"Fout bij uitlezen geluidssensor: {e}")
+            geluid = 0.0
+
+        # --- DHT22 temperatuur & vochtigheid ---
+        try:
+            temp  = self.dht.temperature  # °C
+            vocht = self.dht.humidity     # %
+            if temp is None or vocht is None:
+                raise ValueError("DHT22 gaf None terug")
+        except Exception as e:
+            print(f"Fout bij uitlezen DHT22: {e}")
+            temp  = 0.0
+            vocht = 0.0
+
+        return {
+            "temp":   round(temp,  1),
+            "vocht":  round(vocht, 1),
+            "geluid": geluid,
+        }
  
     # ─────────────────────────────────────────
     #  DROOGTIJD BEREKENING
