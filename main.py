@@ -140,7 +140,6 @@ VREF = 3.3
 HALF_CLOCK_DELAY_SECONDS = 0.00001
 
 
-
 # Motion sensor (BOARD pin 8 -> BCM 14)
 MOTION_BCM_PIN = 14
 
@@ -212,8 +211,6 @@ def main():
     next_dht_time = 0.0
     last_temperature = None
     last_humidity = None
-
-
 
     try:
         while True:
