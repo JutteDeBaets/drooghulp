@@ -3,10 +3,10 @@
 import time
 
 try:
-    from gpiozero import DigitalInputDevice, DigitalOutputDevice, InputDevice
+    import RPi.GPIO as GPIO
 except ImportError as err:
     raise SystemExit(
-        "gpiozero is not installed. Install it with 'pip install gpiozero' or 'sudo apt install python3-gpiozero'."
+        "RPi.GPIO is not installed. Install it with 'pip install RPi.GPIO' or 'sudo apt install python3-rpi.gpio'."
     ) from err
 
 
@@ -118,32 +118,33 @@ DHT_PIN = 7
 DHT_PIN_MODE = "BOARD"
 
 
-def read_pmodad1_channel0_bitbang(cs, clk, d0):
+def read_pmodad1_channel0_bitbang():
     """Read a 12-bit sample from PmodAD1 with software clocking."""
     value = 0
 
-    cs.off()
+    GPIO.output(GPIO_CS, GPIO.LOW)
     time.sleep(HALF_CLOCK_DELAY_SECONDS)
 
     # PmodAD1/ADCS7476 shifts out 16 bits total: leading zeros + 12-bit sample.
     for _ in range(16):
-        clk.on()
+        GPIO.output(GPIO_CLK, GPIO.HIGH)
         time.sleep(HALF_CLOCK_DELAY_SECONDS)
 
-        value = (value << 1) | int(d0.value)
+        value = (value << 1) | int(GPIO.input(GPIO_D0))
 
-        clk.off()
+        GPIO.output(GPIO_CLK, GPIO.LOW)
         time.sleep(HALF_CLOCK_DELAY_SECONDS)
 
-    cs.on()
+    GPIO.output(GPIO_CS, GPIO.HIGH)
     return value & 0x0FFF
 
 
 def main():
-    clk = DigitalOutputDevice(GPIO_CLK, active_high=True, initial_value=False)
-    cs = DigitalOutputDevice(GPIO_CS, active_high=True, initial_value=True)
-    d0 = DigitalInputDevice(GPIO_D0)
-    motion = InputDevice(MOTION_BCM_PIN, pull_up=False)
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(GPIO_CLK, GPIO.OUT, initial=GPIO.LOW)
+    GPIO.setup(GPIO_CS, GPIO.OUT, initial=GPIO.HIGH)
+    GPIO.setup(GPIO_D0, GPIO.IN)
+    GPIO.setup(MOTION_BCM_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     bcm_pin = resolve_bcm_pin(DHT_PIN, DHT_PIN_MODE)
     read_dht, backend_name = _build_reader(DHT_SENSOR_TYPE, bcm_pin)
@@ -159,9 +160,9 @@ def main():
 
     try:
         while True:
-            value = read_pmodad1_channel0_bitbang(cs, clk, d0)
+            value = read_pmodad1_channel0_bitbang()
             voltage = (value / 4095.0) * VREF
-            motion_state = int(motion.is_active)
+            motion_state = int(GPIO.input(MOTION_BCM_PIN))
 
             humidity = None
             temperature = None
@@ -186,10 +187,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
-        cs.close()
-        clk.close()
-        d0.close()
-        motion.close()
+        GPIO.cleanup((GPIO_CLK, GPIO_CS, GPIO_D0, MOTION_BCM_PIN))
 
 
 if __name__ == "__main__":
