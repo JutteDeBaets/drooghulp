@@ -55,20 +55,8 @@ def resolve_bcm_pin(pin, numbering_mode):
 
 
 def _build_reader(sensor_name, bcm_pin):
-    """Try legacy Adafruit_DHT first, then CircuitPython DHT."""
-    adafruit_dht_error = None
-
-    try:
-        import Adafruit_DHT
-
-        sensor = getattr(Adafruit_DHT, sensor_name)
-
-        def _legacy_read():
-            return Adafruit_DHT.read_retry(sensor, bcm_pin, retries=3, delay_seconds=1)
-
-        return _legacy_read, "Adafruit_DHT"
-    except Exception as err:
-        adafruit_dht_error = err
+    """Prefer CircuitPython DHT, fallback to legacy Adafruit_DHT."""
+    circuit_error = None
 
     try:
         import adafruit_dht
@@ -91,12 +79,24 @@ def _build_reader(sensor_name, bcm_pin):
                 return None, None
 
         return _circuit_read, "adafruit-circuitpython-dht"
-    except Exception as circuit_error:
+    except Exception as err:
+        circuit_error = err
+
+    try:
+        import Adafruit_DHT
+
+        sensor = getattr(Adafruit_DHT, sensor_name)
+
+        def _legacy_read():
+            return Adafruit_DHT.read_retry(sensor, bcm_pin, retries=3, delay_seconds=1)
+
+        return _legacy_read, "Adafruit_DHT"
+    except Exception as adafruit_error:
         raise RuntimeError(
             "No supported DHT backend is available. "
-            "Install Adafruit_DHT or adafruit-circuitpython-dht. "
-            f"Adafruit_DHT error: {adafruit_dht_error}; "
-            f"CircuitPython error: {circuit_error}"
+            "Install adafruit-circuitpython-dht or Adafruit_DHT. "
+            f"CircuitPython error: {circuit_error}; "
+            f"Adafruit_DHT error: {adafruit_error}"
         )
 
 
