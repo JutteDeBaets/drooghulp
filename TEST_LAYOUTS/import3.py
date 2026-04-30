@@ -111,10 +111,10 @@ class LaundryApp(ctk.CTk):
             print("Systeem: Geen sensor gedetecteerd (PC/Laptop mode).")
 
         # Gecachte weerdata
-        self.locatie = {"city": DEFAULT_CITY, "lat": DEFAULT_LAT, "lon": DEFAULT_LON}
-        
+        self.locatie      = {"city": DEFAULT_CITY, "lat": DEFAULT_LAT, "lon": DEFAULT_LON}
         self.huidige_temp = "--°C"
         self.weer_code    = 0
+        self.weer_data    = {"regen_kans": 0}   # fallback tot API klaar is
 
         self.live_energieprijs = 0.28
         self.fetch_energy_prices()
@@ -183,29 +183,47 @@ class LaundryApp(ctk.CTk):
         try:
             url = (
                 f"https://api.open-meteo.com/v1/forecast"
-                f"?latitude={lat}&longitude={lon}&current_weather=true"
+                f"?latitude={lat}&longitude={lon}"
+                f"&current_weather=true"
+                f"&hourly=precipitation_probability"
+                f"&forecast_days=1"
             )
             with urlopen(url, timeout=5) as r:
                 data = json.load(r)
                 current = data["current_weather"]
                 self.huidige_temp = f"{current['temperature']}°C"
+
+                # Haal regenkans op voor huidige + komende 3 uur
+                try:
+                    uur_nu = datetime.now().hour
+                    probs  = data["hourly"]["precipitation_probability"]
+                    regen_kans = max(probs[uur_nu:uur_nu + 4])
+                except Exception:
+                    regen_kans = 0
+                self.weer_data = {"regen_kans": regen_kans}
+
                 return int(current["weathercode"])
         except Exception as e:
             print(f"Weer fout: {e}")
             self.huidige_temp = "--°C"
+            self.weer_data = {"regen_kans": 0}
             return 0
- 
+
     def _apply_weather(self, locatie: dict, weer_code: int):
-        """Pas gecachte waarden toe en update de UI-widget."""
+        """Pas gecachte waarden toe en update de UI-widget + home-advies."""
         self.locatie   = locatie
         self.weer_code = weer_code
         icon = self._weer_icon(weer_code)
         tijd = datetime.now().strftime("%a %d/%m, %H:%M")
- 
+
         # Update bestaande labels (aangemaakt in setup_bovenhoek)
         self.weer_icon.configure(text=icon)
         self.stad_label.configure(text=locatie["city"])
         self.tijd_label.configure(text=tijd)
+
+        # Herbereken advies nu weerdata beschikbaar is
+        if hasattr(self, '_home_refs'):
+            self.update_home_advies()
  
     @staticmethod
     def _weer_icon(code: int) -> str:
@@ -213,6 +231,72 @@ class LaundryApp(ctk.CTk):
         if 1 <= code <= 3:     return "☁️"
         if code >= 51:         return "🌧️"
         return "⛅"
+
+    # ─────────────────────────────────────────
+    #  BESLISSINGSMATRIX  (bepaal droogadvies)
+    # ─────────────────────────────────────────
+    def bepaal_droog_advies(self) -> tuple[str, str, str, str]:
+        """
+        Geeft (status, kleur_hex, icoon, advies_tekst) terug op basis van de
+        beslissingsmatrix. Volgorde = prioriteit (hoog → laag).
+
+        Status-waarden: "rood" | "oranje" | "groen"
+        """
+        nu  = datetime.now()
+        uur = nu.hour
+
+        # Bereken droogtijd voor huidig stoftype (buiten, in uren)
+        try:
+            temp_buiten = float(self.huidige_temp.replace("°C", ""))
+        except ValueError:
+            temp_buiten = 15.0
+        self.droogtijd_buiten = self.bereken_droogtijd(
+            temp_buiten, DEFAULT_VOCHT_BUITEN,
+            wind=DEFAULT_WIND_BUITEN, is_buiten=True,
+            stof_type=self.huidig_stoftype
+        )
+
+        # Interne vochtigheid ophalen (sensor of fallback)
+        sensor = self.get_internal_sensor_data()
+        self.binnen_vochtigheid = sensor["vocht"]
+
+        # ── 1. Regen (meest kritiek) ──────────────────────────────────
+        regen_kans = getattr(self, 'weer_data', {}).get('regen_kans', 0)
+        if regen_kans > 20:
+            return ("rood", self.accent_red, "🌧️",
+                    f"Niet buiten – Regen verwacht ({regen_kans}%)")
+
+        # ── 2. Nacht / Dauw ──────────────────────────────────────────
+        if uur >= 20 or uur < 8:
+            return ("rood", self.accent_red, "🌙",
+                    "Niet buiten – Nacht/Dauw risico")
+
+        # ── 3. Te laat gestart (daglicht te kort) ────────────────────
+        if uur + self.droogtijd_buiten > 20:
+            uren_over = round(20 - uur, 1)
+            return ("oranje", self.accent_orange, "⏳",
+                    f"Buiten: te laat – was wordt klam\n({uren_over}u daglicht over, {self.droogtijd_buiten}u nodig)")
+
+        # ── 4. Binnenvochtigheid te hoog (schimmelrisico) ────────────
+        if self.binnen_vochtigheid > 65:
+            return ("rood", self.accent_red, "💧",
+                    f"Niet binnen – Vochtigheid te hoog ({self.binnen_vochtigheid:.0f}%)")
+
+        # ── 5. Droogkast goedkoop & buiten ook OK ────────────────────
+        if self.live_energieprijs < 0.20:
+            return ("groen", self.accent_green, "⚡",
+                    f"Buiten is top, maar droger nu goedkoop! (€{self.live_energieprijs:.2f}/kWh)")
+
+        # ── 6. Ideaal ────────────────────────────────────────────────
+        return ("groen", self.accent_green, "🌲",
+                "Ideaal weer – hang de was buiten!")
+
+    # Mapping status → home-screen stijl
+    ADVIES_STIJL = {
+        "groen":  {"bg": "#e8fff3", "btn_kleur": "#00d056", "btn_hover": "#00b34a"},
+        "oranje": {"bg": "#fff8e8", "btn_kleur": "#ff9f00", "btn_hover": "#e68f00"},
+        "rood":   {"bg": "#fff0f0", "btn_kleur": "#ff3b3b", "btn_hover": "#e63535"},
+    }
  
     # ─────────────────────────────────────────
     #  SENSOR (intern)
@@ -476,35 +560,75 @@ class LaundryApp(ctk.CTk):
         self.update_sidebar_selection("balance")
  
     # ─────────────────────────────────────────
-    #  SCHERM 1 – HOME
+    #  SCHERM 1 – HOME  (dynamisch gekleurd)
     # ─────────────────────────────────────────
     def setup_home_screen(self):
-        ctk.CTkLabel(
+        """Bouw het home-frame op; _home_refs bewaar refs voor live updates."""
+        self._home_refs = {}
+
+        self._home_refs["icoon"] = ctk.CTkLabel(
             self.home_frame, text="🌲", font=("Arial", 120),
             text_color=self.accent_green
-        ).pack(expand=True, pady=(60, 0))
- 
-        ctk.CTkLabel(
-            self.home_frame, text="Hang de was buiten",
+        )
+        self._home_refs["icoon"].pack(expand=True, pady=(60, 0))
+
+        self._home_refs["tekst"] = ctk.CTkLabel(
+            self.home_frame, text="Laden…",
             font=("Arial Bold", 42), text_color="black"
-        ).pack(expand=True)
- 
+        )
+        self._home_refs["tekst"].pack(expand=True)
+
+        # Sub-tekst (reden / tip)
+        self._home_refs["sub"] = ctk.CTkLabel(
+            self.home_frame, text="",
+            font=("Arial", 18), text_color="#555", wraplength=500
+        )
+        self._home_refs["sub"].pack()
+
         btn_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
         btn_row.pack(expand=True, pady=(0, 60))
- 
-        ctk.CTkButton(
+
+        self._home_refs["timer_btn"] = ctk.CTkButton(
             btn_row, text="TIMER INSTELLEN",
             fg_color=self.accent_green, hover_color="#00b34a", text_color="white",
-            height=60, width=150, corner_radius=15, font=("Arial Bold", 18),
+            height=60, width=170, corner_radius=15, font=("Arial Bold", 18),
             command=self.show_selection
-        ).pack(side="left", padx=10)
- 
+        )
+        self._home_refs["timer_btn"].pack(side="left", padx=10)
+
         ctk.CTkButton(
             btn_row, text="VERGELIJKING",
             fg_color="#4a5568", hover_color="#2d3748", text_color="white",
             height=60, width=150, corner_radius=15, font=("Arial Bold", 18),
             command=self.show_comparison
         ).pack(side="left", padx=10)
+
+        # Voer meteen een eerste update uit (toont standaardstatus)
+        self.update_home_advies()
+
+    def update_home_advies(self):
+        """Pas icoon, tekst en kleuren van het home-scherm aan op het advies."""
+        status, kleur_hex, icoon, advies = self.bepaal_droog_advies()
+        stijl = self.ADVIES_STIJL[status]
+
+        # Achtergrondkleur van het frame
+        self.home_frame.configure(fg_color=stijl["bg"])
+
+        # Ondertitels per status
+        HOOFDTEKST = {
+            "groen":  "Hang de was buiten!",
+            "oranje": "Let op je timing",
+            "rood":   "Niet aanbevolen",
+        }
+
+        refs = self._home_refs
+        refs["icoon"].configure(text=icoon, text_color=kleur_hex)
+        refs["tekst"].configure(text=HOOFDTEKST[status], text_color=kleur_hex)
+        refs["sub"].configure(text=advies)
+        refs["timer_btn"].configure(
+            fg_color=stijl["btn_kleur"],
+            hover_color=stijl["btn_hover"]
+        )
  
     # ─────────────────────────────────────────
     #  SCHERM 2 – SELECTIE WAS-SOORT
