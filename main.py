@@ -127,12 +127,17 @@ def _build_reader(sensor_names, bcm_pin):
         )
 
 
-# Grove Sound Sensor v1.6 via PmodAD1 (BCM numbering)
-GPIO_CLK = 11
-GPIO_CS = 24
-GPIO_D0 = 23
+# Grove Sound Sensor v1.6 via PmodAD1 (physical BOARD pins)
+SOUND_CLK_PIN = 16
+SOUND_CS_PIN = 12
+SOUND_D0_PIN = 36
+SOUND_PIN_MODE = "BOARD"
+GPIO_CLK = None
+GPIO_CS = None
+GPIO_D0 = None
 VREF = 3.3
 HALF_CLOCK_DELAY_SECONDS = 0.00001
+ADC_SAMPLE_ON_FALLING = True
 
 
 # Motion sensor (BOARD pin 8 -> BCM 14)
@@ -157,10 +162,15 @@ def read_pmodad1_channel0_bitbang():
         GPIO.output(GPIO_CLK, GPIO.HIGH)
         time.sleep(HALF_CLOCK_DELAY_SECONDS)
 
-        value = (value << 1) | int(GPIO.input(GPIO_D0))
-
         GPIO.output(GPIO_CLK, GPIO.LOW)
         time.sleep(HALF_CLOCK_DELAY_SECONDS)
+
+        if ADC_SAMPLE_ON_FALLING:
+            value = (value << 1) | int(GPIO.input(GPIO_D0))
+        else:
+            GPIO.output(GPIO_CLK, GPIO.HIGH)
+            time.sleep(HALF_CLOCK_DELAY_SECONDS)
+            value = (value << 1) | int(GPIO.input(GPIO_D0))
 
     GPIO.output(GPIO_CS, GPIO.HIGH)
     return value & 0x0FFF
@@ -168,9 +178,14 @@ def read_pmodad1_channel0_bitbang():
 
 def main():
     GPIO.setmode(GPIO.BCM)
+    global GPIO_CLK, GPIO_CS, GPIO_D0
+    GPIO_CLK = resolve_bcm_pin(SOUND_CLK_PIN, SOUND_PIN_MODE)
+    GPIO_CS = resolve_bcm_pin(SOUND_CS_PIN, SOUND_PIN_MODE)
+    GPIO_D0 = resolve_bcm_pin(SOUND_D0_PIN, SOUND_PIN_MODE)
+
     GPIO.setup(GPIO_CLK, GPIO.OUT, initial=GPIO.LOW)
     GPIO.setup(GPIO_CS, GPIO.OUT, initial=GPIO.HIGH)
-    GPIO.setup(GPIO_D0, GPIO.IN)
+    GPIO.setup(GPIO_D0, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     GPIO.setup(MOTION_BCM_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     bcm_pin = resolve_bcm_pin(DHT_PIN, DHT_PIN_MODE)
@@ -178,7 +193,18 @@ def main():
     sensor_driver_error_reported = False
 
     print("Reading Grove Sound Sensor v1.6 via PmodAD1")
-    print("Wiring: CLK=GPIO11(pin23), CS=GPIO24(pin18), D0=GPIO23(pin16)")
+    print(
+        "Wiring: CLK=BOARD {clk}(BCM {clk_bcm}), CS=BOARD {cs}(BCM {cs_bcm}), "
+        "D0=BOARD {d0}(BCM {d0_bcm})"
+        .format(
+            clk=SOUND_CLK_PIN,
+            cs=SOUND_CS_PIN,
+            d0=SOUND_D0_PIN,
+            clk_bcm=GPIO_CLK,
+            cs_bcm=GPIO_CS,
+            d0_bcm=GPIO_D0,
+        )
+    )
     print(f"Motion sensor: BCM {MOTION_BCM_PIN} (BOARD 8)")
     print(f"DHT: {','.join(DHT_SENSOR_TYPES)}, pin mode: {DHT_PIN_MODE}, BCM {bcm_pin}")
     print(f"Using DHT backend: {backend_name}")
