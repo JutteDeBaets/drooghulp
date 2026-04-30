@@ -3,11 +3,18 @@ from datetime import datetime
 import json
 import threading
 import time
+import random  # Voor testwaarden
 from urllib.request import urlopen
-import adafruit_dht
-import board
-import RPi.GPIO as GPIO
 
+# --- MOCKING VOOR NIET-PI APPARATEN ---
+try:
+    import adafruit_dht
+    import board
+    import RPi.GPIO as GPIO
+    ON_PI = True
+except ImportError:
+    ON_PI = False
+    print("Systeem: Geen Raspberry Pi gedetecteerd. Test-modus geactiveerd.")
 # ─────────────────────────────────────────────
 #  CONSTANTEN  (één plek om te wijzigen)
 # ─────────────────────────────────────────────
@@ -43,7 +50,7 @@ class LaundryApp(ctk.CTk):
         "text_blue":    "#1e3a5f",
         "active_blue":  "#00daff",
     }
- 
+   
     # ─────────────────────────────────────────
     #  INIT
     # ─────────────────────────────────────────
@@ -52,7 +59,15 @@ class LaundryApp(ctk.CTk):
  
         self.title("Laundry Dashboard")
         self.geometry("800x480")
- 
+
+        self.actieve_timers = []
+        self.current_screen = None  # Cruciaal: dit voorkomt de AttributeError
+        self.current_timer = None
+        self.huidig_stoftype = "Gemiddeld"
+        self.sidebar_buttons = {}
+        self.sidebar_visible = True
+        self.popup_time_label = None
+
         # Snelkoppelingen naar kleuren
         for k, v in self.KLEUREN.items():
             setattr(self, k, v)
@@ -60,7 +75,9 @@ class LaundryApp(ctk.CTk):
         self.configure(fg_color=self.bg_light)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
- 
+        self.actieve_timers = []  # Lijst met dictionaries: {'naam': ..., 'resterend': ..., 'totaal': ..., 'type': ...}
+        self.update_timers_loop() # Start het tikken van de klok
+
         # ── State ──────────────────────────────
         self.huidig_stoftype = "Gemiddeld"
         self.current_timer   = None
@@ -68,18 +85,32 @@ class LaundryApp(ctk.CTk):
         self.sidebar_visible = True
         self.popup_time_label = None
 
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        GPIO.setup(11, GPIO.OUT, initial=GPIO.LOW)
-        GPIO.setup(24, GPIO.OUT, initial=GPIO.HIGH)
-        GPIO.setup(23, GPIO.IN)
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setwarnings(False)
+            GPIO.setup(11, GPIO.OUT, initial=GPIO.LOW)
+            GPIO.setup(24, GPIO.OUT, initial=GPIO.HIGH)
+            GPIO.setup(23, GPIO.IN)
+            self.gpio_available = True
+        except (ImportError, RuntimeError):
+            self.gpio_available = False
+            print("GPIO niet beschikbaar: hardware-functies worden overgeslagen.")
 
         # DHT22 op GPIO4 (BOARD pin 7) – pas aan indien anders bedraad
-        self.dht = adafruit_dht.DHT22(board.D4)
+        try:
+            # DHT22 op GPIO4 (BOARD pin 7)
+            import adafruit_dht
+            import board
+            self.dht = adafruit_dht.DHT22(board.D4)
+            print("Sensor: DHT22 succesvol geïnitialiseerd.")
+        except (ImportError, RuntimeError, AttributeError):
+            self.dht = None
+            print("Systeem: Geen sensor gedetecteerd (PC/Laptop mode).")
 
-
-        # Gecachte weerdata (gevuld door _load_weather_async)
-        self.locatie    = {"city": DEFAULT_CITY, "lat": DEFAULT_LAT, "lon": DEFAULT_LON}
+        # Gecachte weerdata
+        self.locatie = {"city": DEFAULT_CITY, "lat": DEFAULT_LAT, "lon": DEFAULT_LON}
+        
         self.huidige_temp = "--°C"
         self.weer_code    = 0
  
@@ -90,7 +121,13 @@ class LaundryApp(ctk.CTk):
             font=("Arial", 30), corner_radius=10, border_width=0,
             command=self.toggle_sidebar
         )
- 
+        
+        self.METHODE_STYLING = {
+            "Buiten": {"icoon": "🌲", "kleur": "#27ae60"},
+            "Binnen": {"icoon": "🏠", "kleur": "#f39c12"},
+            "Droger": {"icoon": "🌀", "kleur": "#e74c3c"}
+        }
+
         # ── UI opbouwen ────────────────────────
         self.setup_sidebar()
         self._init_frames()
@@ -101,6 +138,7 @@ class LaundryApp(ctk.CTk):
  
         # ── Sluit-handler ──────────────────────
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
  
         # ── Weerdata laden op achtergrond ───────
         threading.Thread(target=self._load_weather_async, daemon=True).start()
@@ -260,7 +298,39 @@ class LaundryApp(ctk.CTk):
         sec_kast = self.KAST_SECONDEN[was_type]
  
         return sec_buiten, sec_binnen, sec_kast
- 
+    def add_timer(self, methode, was_type, seconden):
+        # Voeg een nieuwe timer toe aan de lijst
+        self.actieve_timers.append({
+            "methode": methode,
+            "was_type": was_type,
+            "resterend": seconden,
+            "totaal": seconden
+        })
+
+    def update_timers_loop(self):
+        for timer in self.actieve_timers:
+            if timer["resterend"] > 0:
+                timer["resterend"] -= 1
+        
+        # Gebruik hasattr() als extra veiligheid[cite: 1]
+        if getattr(self, "current_screen", None) == "timers":
+            self.refresh_timer_display()
+            
+        self.after(1000, self.update_timers_loop)
+
+    def refresh_timer_display(self):
+        # Alleen uitvoeren als we op het timer-scherm zijn en de elementen bestaan
+        if self.current_screen == "timers" and hasattr(self, 'timer_ui_elements'):
+            for i, timer in enumerate(self.actieve_timers):
+                if i in self.timer_ui_elements:
+                    # Bereken voortgang
+                    procent = (timer["totaal"] - timer["resterend"]) / timer["totaal"]
+                    tijd_str = f"{timer['resterend']//3600:02d}:{(timer['resterend']%3600)//60:02d}:{timer['resterend']%60:02d}"
+                    
+                    # Update de bestaande widgets (GEEN destroy!)
+                    self.timer_ui_elements[i]["pb"].set(procent)
+                    self.timer_ui_elements[i]["tijd"].configure(text=tijd_str)
+            
     # ─────────────────────────────────────────
     #  SIDEBAR
     # ─────────────────────────────────────────
@@ -281,7 +351,7 @@ class LaundryApp(ctk.CTk):
             ("✧", "home",    self.show_home),
             ("⚡", "energy", None),
             ("⚖", "balance", self.show_comparison),
-            ("⌛", "timer",  None),
+            ("⌛", "timer",  self.show_timers_screen),
             ("⚙", "settings", None),
         ]
         for icon, name, actie in menu_items:
@@ -360,7 +430,7 @@ class LaundryApp(ctk.CTk):
             self.current_timer = None
         for f in [
             self.home_frame, self.selection_frame, self.drying_frame,
-            self.confirm_frame, self.timer_frame, self.compare_frame
+            self.confirm_frame, self.timer_frame, self.compare_frame,
         ]:
             f.grid_forget()
  
@@ -552,8 +622,10 @@ class LaundryApp(ctk.CTk):
             corner_radius=20, font=("Arial Bold", 20), text_color="white",
             command=lambda: self.start_timer(was_type, methode, seconden)
         ).pack(pady=40)
- 
+
+        self.add_timer(methode, was_type, seconden)
         self.confirm_frame.grid(row=0, column=1, sticky="nsew")
+        
  
     # ─────────────────────────────────────────
     #  SCHERM 5 – TIMER
@@ -671,6 +743,45 @@ class LaundryApp(ctk.CTk):
         self.close_popup()
         self.show_home()
  
+    def show_timers_screen(self):
+        self.hide_all()
+        self.current_screen = "timers"
+        self.timer_ui_elements = {}
+
+        for w in self.timer_frame.winfo_children(): 
+            w.destroy()
+
+        # ... (scrollframe aanmaken) ...
+
+        for i, timer in enumerate(self.actieve_timers):
+            # Haal de juiste stijl op, gebruik een fallback als de methode onbekend is
+            stijl = self.METHODE_STYLING.get(timer["methode"], {"icoon": "⏳", "kleur": "gray"})
+            scroll = ctk.CTkScrollableFrame(self.timer_frame, fg_color="transparent", width=700, height=400)
+            scroll.pack(expand=True, fill="both", padx=50)
+
+            card = ctk.CTkFrame(scroll, fg_color="white", corner_radius=20, height=100)
+            card.pack(fill="x", pady=10, padx=10)
+            card.pack_propagate(False)
+
+            # Icoon met de juiste kleur
+            ctk.CTkLabel(card, text=stijl["icoon"], font=("Arial", 40), text_color=stijl["kleur"]).pack(side="left", padx=20)
+            
+            # Naam van de methode
+            ctk.CTkLabel(card, text=f"{timer['methode']} - {timer['was_type']}", 
+                         font=("Arial Bold", 16), text_color="black").pack(side="left")
+
+            # Progress bar met de kleur van de methode
+            pb = ctk.CTkProgressBar(card, width=200, progress_color=stijl["kleur"])
+            pb.pack(side="left", padx=20)
+            
+            lbl_tijd = ctk.CTkLabel(card, text="00:00:00", font=("Consolas", 20, "bold"), text_color="black")
+            lbl_tijd.pack(side="right", padx=20)
+
+            self.timer_ui_elements[i] = {"pb": pb, "tijd": lbl_tijd}
+            
+        self.timer_frame.grid(row=0, column=1, sticky="nsew")
+        self.refresh_timer_display()
+
     # ─────────────────────────────────────────
     #  SCHERM 6 – VERGELIJKING
     # ─────────────────────────────────────────
@@ -769,7 +880,22 @@ class LaundryApp(ctk.CTk):
                 ctk.CTkFrame(inner, width=2, fg_color="#444").grid(
                     row=1, column=i, sticky="nse", pady=(0, 40)
                 )
- 
+    def on_closing(self):
+        print("Applicatie wordt afgesloten...")
+        
+        # 1. Stop de timer loop (optioneel, maar netjes)
+        self.current_screen = None 
+        
+        # 2. Ruim de GPIO pinnen op (alleen als je op de Pi bent)
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.cleanup()
+        except:
+            pass
+            
+        # 3. Stop de mainloop en vernietig het venster
+        self.quit()
+        self.destroy()
  
 if __name__ == "__main__":
     app = LaundryApp()
