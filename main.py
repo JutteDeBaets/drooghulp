@@ -137,6 +137,7 @@ GPIO_CS = None
 GPIO_D0 = None
 VREF = 3.3
 HALF_CLOCK_DELAY_SECONDS = 0.00001
+ADC_SAMPLE_ON_FALLING = True
 
 
 # Motion sensor (BOARD pin 8 -> BCM 14)
@@ -161,10 +162,15 @@ def read_pmodad1_channel0_bitbang():
         GPIO.output(GPIO_CLK, GPIO.HIGH)
         time.sleep(HALF_CLOCK_DELAY_SECONDS)
 
-        value = (value << 1) | int(GPIO.input(GPIO_D0))
-
         GPIO.output(GPIO_CLK, GPIO.LOW)
         time.sleep(HALF_CLOCK_DELAY_SECONDS)
+
+        if ADC_SAMPLE_ON_FALLING:
+            value = (value << 1) | int(GPIO.input(GPIO_D0))
+        else:
+            GPIO.output(GPIO_CLK, GPIO.HIGH)
+            time.sleep(HALF_CLOCK_DELAY_SECONDS)
+            value = (value << 1) | int(GPIO.input(GPIO_D0))
 
     GPIO.output(GPIO_CS, GPIO.HIGH)
     return value & 0x0FFF
@@ -179,7 +185,7 @@ def main():
 
     GPIO.setup(GPIO_CLK, GPIO.OUT, initial=GPIO.LOW)
     GPIO.setup(GPIO_CS, GPIO.OUT, initial=GPIO.HIGH)
-    GPIO.setup(GPIO_D0, GPIO.IN)
+    GPIO.setup(GPIO_D0, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     GPIO.setup(MOTION_BCM_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     bcm_pin = resolve_bcm_pin(DHT_PIN, DHT_PIN_MODE)
