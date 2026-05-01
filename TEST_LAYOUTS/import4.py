@@ -528,7 +528,7 @@ class LaundryApp(ctk.CTk):
             ("⚡", "energy", None),
             ("⚖", "balance", self.show_comparison),
             ("⌛", "timer",  self.show_timers_screen),
-            ("⚙", "settings", None),
+            ("⚙", "settings", self.show_debug_info),
         ]
         for icon, name, actie in menu_items:
             btn = ctk.CTkButton(
@@ -923,36 +923,33 @@ class LaundryApp(ctk.CTk):
         self.hide_all()
         self.current_screen = "timers"
         self.timer_ui_elements = {}
- 
+
         for w in self.timer_frame.winfo_children(): 
             w.destroy()
- 
-        # ... (scrollframe aanmaken) ...
- 
+
+        # 1. Maak de scrollbox ÉÉN keer aan, BUITEN de loop
+        scroll = ctk.CTkScrollableFrame(self.timer_frame, fg_color="transparent", width=700, height=400)
+        scroll.pack(expand=True, fill="both", padx=50, pady=20)
+
         for i, timer in enumerate(self.actieve_timers):
-            # Haal de juiste stijl op, gebruik een fallback als de methode onbekend is
             stijl = self.METHODE_STYLING.get(timer["methode"], {"icoon": "⏳", "kleur": "gray"})
-            scroll = ctk.CTkScrollableFrame(self.timer_frame, fg_color="transparent", width=700, height=400)
-            scroll.pack(expand=True, fill="both", padx=50)
- 
+            
+            # 2. Voeg de kaart toe aan 'scroll'
             card = ctk.CTkFrame(scroll, fg_color="white", corner_radius=20, height=100)
             card.pack(fill="x", pady=10, padx=10)
             card.pack_propagate(False)
- 
-            # Icoon met de juiste kleur
+
             ctk.CTkLabel(card, text=stijl["icoon"], font=("Arial", 40), text_color=stijl["kleur"]).pack(side="left", padx=20)
-            
-            # Naam van de methode
             ctk.CTkLabel(card, text=f"{timer['methode']} - {timer['was_type']}", 
                          font=("Arial Bold", 16), text_color="black").pack(side="left")
- 
-            # Progress bar met de kleur van de methode
+
             pb = ctk.CTkProgressBar(card, width=200, progress_color=stijl["kleur"])
             pb.pack(side="left", padx=20)
+            pb.set(0) # Startwaarde
             
             lbl_tijd = ctk.CTkLabel(card, text="00:00:00", font=("Consolas", 20, "bold"), text_color="black")
             lbl_tijd.pack(side="right", padx=20)
- 
+
             self.timer_ui_elements[i] = {"pb": pb, "tijd": lbl_tijd}
             
         self.timer_frame.grid(row=0, column=1, sticky="nsew")
@@ -1058,6 +1055,25 @@ class LaundryApp(ctk.CTk):
                 ctk.CTkFrame(inner, width=2, fg_color="#444").grid(
                     row=1, column=i, sticky="nse", pady=(0, 40)
                 )
+    
+    def show_debug_info(self):
+    """Toon een popup met de rauwe sensorwaarden en fouten."""
+    debug_win = ctk.CTkToplevel(self)
+    debug_win.title("Sensor Debugger")
+    debug_win.geometry("400x300")
+    debug_win.attributes("-topmost", True)
+
+    binnen = self.get_internal_sensor_data()
+    
+    info = f"DHT Temp: {self._last_temp}\n"
+    info += f"DHT Vocht: {self._last_hum}\n"
+    info += f"Sound ADC: {binnen['geluid']}V\n"
+    info += f"On Pi: {ON_PI}\n"
+    info += f"Next DHT Read: {round(self._next_dht_time - time.monotonic(), 1)}s"
+    
+    ctk.CTkLabel(debug_win, text=info, font=("Consolas", 14), justify="left").pack(pady=20)
+    ctk.CTkButton(debug_win, text="Sluit", command=debug_win.destroy).pack(pady=10)
+    
 if __name__ == "__main__":
     app = LaundryApp()
     app.mainloop()
