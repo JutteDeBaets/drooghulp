@@ -1,3 +1,5 @@
+from multiprocessing.util import info
+
 import customtkinter as ctk
 from datetime import datetime
 import json
@@ -1057,22 +1059,22 @@ class LaundryApp(ctk.CTk):
                 )
     
     def show_debug_info(self):
-    """Toon een popup met de rauwe sensorwaarden en fouten."""
-    debug_win = ctk.CTkToplevel(self)
-    debug_win.title("Sensor Debugger")
-    debug_win.geometry("400x300")
-    debug_win.attributes("-topmost", True)
+        """Toon een popup met de rauwe sensorwaarden en fouten."""
+        debug_win = ctk.CTkToplevel(self)
+        debug_win.title("Sensor Debugger")
+        debug_win.geometry("400x300")
+        debug_win.attributes("-topmost", True)
 
-    binnen = self.get_internal_sensor_data()
+        binnen = self.get_internal_sensor_data()
     
-    info = f"DHT Temp: {self._last_temp}\n"
-    info += f"DHT Vocht: {self._last_hum}\n"
-    info += f"Sound ADC: {binnen['geluid']}V\n"
-    info += f"On Pi: {ON_PI}\n"
-    info += f"Next DHT Read: {round(self._next_dht_time - time.monotonic(), 1)}s"
+        info = f"DHT Temp: {self._last_temp}\n"
+        info += f"DHT Vocht: {self._last_hum}\n"
+        info += f"Sound ADC: {binnen['geluid']}V\n"
+        info += f"On Pi: {ON_PI}\n"
+        info += f"Next DHT Read: {round(self._next_dht_time - time.monotonic(), 1)}s"
     
-    ctk.CTkLabel(debug_win, text=info, font=("Consolas", 14), justify="left").pack(pady=20)
-    ctk.CTkButton(debug_win, text="Sluit", command=debug_win.destroy).pack(pady=10)
+        ctk.CTkLabel(debug_win, text=info, font=("Consolas", 14), justify="left").pack(pady=20)
+        ctk.CTkButton(debug_win, text="Sluit", command=debug_win.destroy).pack(pady=10)
     
 if __name__ == "__main__":
     app = LaundryApp()
