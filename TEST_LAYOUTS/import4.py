@@ -1112,8 +1112,9 @@ class LaundryApp(ctk.CTk):
         inner.grid_columnconfigure((0, 1, 2), weight=1)
 
         # 4. Sensor data ophalen (koppeling met je Debugger scherm)
-        t_binnen = self._last_temp if self._last_temp is not None else 20.0
-        v_binnen = self._last_hum if self._last_hum is not None else 50.0
+        binnen = self.get_internal_sensor_data()
+        t_binnen = binnen['temp'] if binnen['temp'] is not None else 20.0
+        v_binnen = binnen['vocht'] if binnen['vocht'] is not None else 50.0
 
         # 5. Buitentemperatuur veilig omzetten
         try:
