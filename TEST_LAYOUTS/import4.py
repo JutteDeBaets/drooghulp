@@ -522,32 +522,44 @@ class LaundryApp(ctk.CTk):
                     self.timer_ui_elements[i]["tijd"].configure(text=tijd_str)
 
     def bepaal_beste_optie(self):
-        
-        """Analyseert data en geeft advies terug."""
+        """Analyseert data en geeft een gerangschikte lijst op basis van tijd, weer en kosten."""
         binnen_data = self.get_internal_sensor_data()
         vocht_binnen = binnen_data["vocht"]
         sec_buiten, sec_binnen, sec_kast = self._bereken_alle_tijden(self.huidig_stoftype)
+
+        scores = []
+
+        # 1. Buiten Score
+        buiten_score = sec_buiten
+        # BONUS: Als de zon schijnt (weercode 0-3) en het is niet te vochtig, geef bonus
+        if self.weer_code <= 3:
+            buiten_score -= 3600  # Trek virtueel een uur van de tijd af als 'beloning'
+        # STRAF: Als het regent, maak het onmogelijk
+        if self.weer_code >= 51:
+            buiten_score += 1000000 
+        scores.append(("Buiten", buiten_score))
+
+        # 2. Binnen Score
+        binnen_score = sec_binnen
+        if vocht_binnen > 65:
+            binnen_score += 500000 
+        scores.append(("Binnen", binnen_score))
+
+        # 3. Droger Score
+        # We berekenen de 'kostprijs-straf'. 
+        # Hoe duurder de stroom, hoe hoger de score (en dus hoe slechter de optie).
+        # Een droogbeurt verbruikt gemiddeld 2.5 kWh.
+        stroom_straf = self.live_energieprijs * 2.5 * 3600 # We rekenen euro's om naar 'tijd-punten'
     
-        # Buiten (Geen regen en sneller dan binnen of binnen te vochtig)
-        if self.weer_code < 51:
-            if sec_buiten <= sec_binnen or vocht_binnen > 65:
-                return {
-                    "methode": "Buiten",
-                    "waarom": f"Het is droog en buiten duurt het ongeveer {sec_buiten//3600} uur."
-                }
+        # We geven de droger ook een basis-straf omdat we liever gratis drogen
+        basis_straf_droger = 7200 # 2 uur extra strafpunten voor het milieu/portemonnee
+    
+        droger_score = sec_kast + stroom_straf + basis_straf_droger
+        scores.append(("Droger", droger_score))
 
-        # Binnen (Vochtigheid veilig)
-        if vocht_binnen < 65:
-            return {
-                "methode": "Binnen",
-                "waarom": f"Buiten is niet ideaal, maar binnen is de vochtigheid ({vocht_binnen}%) oké."
-            }
-
-        # Droogkast
-        return {
-            "methode": "Droger",
-            "waarom": f"Het regent of het is binnen te vochtig ({vocht_binnen}%). Energie: €{self.live_energieprijs:.2f}/kWh."
-        }
+        # Sorteer: Laagste score is de beste keuze
+        gerangschikt = sorted(scores, key=lambda x: x[1])
+        return gerangschikt
     # ─────────────────────────────────────────
     #  SIDEBAR
     # ─────────────────────────────────────────
@@ -677,36 +689,50 @@ class LaundryApp(ctk.CTk):
     #  SCHERM 1 – HOME
     # ─────────────────────────────────────────
     def setup_home_screen(self):
-        # 1. Haal advies op
-        advies = self.bepaal_beste_optie()
-    
-        # 2. Kies icoon en tekst
-        if advies["methode"] == "Buiten":
-            display_text = "Hang de was buiten"
-            display_icon = "🌲"
-        elif advies["methode"] == "Binnen":
-            display_text = "Hang de was binnen"
-            display_icon = "🏠"
-        else:
-            display_text = "Steek de was in de droogkast"
-            display_icon = "🌀"
 
+        # 1. Haal de gerangschikte lijst op
+        ranking = self.bepaal_beste_optie()
+    
+        # De winnaar is altijd het eerste item in de lijst: (methode, score)
+        beste_methode = ranking[0][0]
+    
+        # 2. Kies icoon, tekst en de 'waarom'-uitleg
+        # We maken hier een kleine dictionary voor de teksten
+        uitleg_map = {
+            "Buiten": {
+                "text": "Hang de was buiten",
+                "icon": "🌲",
+                "waarom": "Het zonnetje schijnt! Ideaal om gratis buiten te drogen."
+            },
+            "Binnen": {
+                "text": "Hang de was binnen",
+                "icon": "🏠",
+                "waarom": f"Buiten is niet optimaal, maar binnen is de vochtigheid momenteel prima."
+            },
+            "Droger": {
+                "text": "Steek de was in de droogkast",
+                "icon": "🌀",
+                "waarom": f"Het regent of de luchtvochtigheid is te hoog. Huidige stroomprijs: €{self.live_energieprijs:.4f}/kWh."
+            }
+        }
+
+        display_data = uitleg_map.get(beste_methode)
+    
         # 3. UI elementen opbouwen
-        # Grote icoon
+        # Gebruik de data uit de map
         ctk.CTkLabel(
-            self.home_frame, text=display_icon, font=("Arial", 120),
+            self.home_frame, text=display_data["icon"], font=("Arial", 120),
             text_color=self.accent_green
         ).pack(expand=True, pady=(60, 0))
 
-        # Hoofdtitel
         ctk.CTkLabel(
-            self.home_frame, text=display_text,
+            self.home_frame, text=display_data["text"],
             font=("Arial Bold", 42), text_color="black"
         ).pack(expand=True)
 
         # Waarom-tekst
         ctk.CTkLabel(
-            self.home_frame, text=advies["waarom"],
+            self.home_frame, text=display_data["waarom"],
             font=("Arial", 18), text_color="#4a5568"
         ).pack(expand=True, pady=(0, 20))
 
@@ -794,14 +820,42 @@ class LaundryApp(ctk.CTk):
  
         # --- DATA BEREKENEN ---
         sec_buiten, sec_binnen, sec_kast = self._bereken_alle_tijden(was_type)
+        
+        # Roep je logica aan om de volgorde te bepalen
+        # Deze functie moet een lijst teruggeven, bijv: [("Buiten", score), ("Binnen", score), ...]
+        ranking = self.bepaal_beste_optie() 
+        
         def fmt(s: int) -> str:
             return f"~{s // 3600}u {(s % 3600) // 60}m"
- 
-        opties = [
-            ("🌲", "Buiten", fmt(sec_buiten), self.accent_green,  sec_buiten, "#00b34a"),
-            ("🏠", "Binnen", fmt(sec_binnen), self.accent_orange, sec_binnen, "#e68f00"),
-            ("🌀", "Droger", fmt(sec_kast),   self.accent_red,    sec_kast,   "#e63535"),
+
+        # Mapping van methode naar data
+        data_map = {
+            "Buiten": {"icon": "🌲", "sec": sec_buiten},
+            "Binnen": {"icon": "🏠", "sec": sec_binnen},
+            "Droger": {"icon": "🌀", "sec": sec_kast}
+        }
+
+        # Kleurenschema voor ranking
+        rank_kleuren = [
+            (self.accent_green, "#00b34a"),  # 1ste plaats (Beste)
+            (self.accent_orange, "#e68f00"), # 2de plaats
+            (self.accent_red, "#e63535")     # 3de plaats (Slechtste)
         ]
+
+        opties = []
+        # Bouw de opties lijst op basis van de ranking
+        for index, (methode, score) in enumerate(ranking):
+            kleur, h_kleur = rank_kleuren[index]
+            info = data_map[methode]
+            
+            opties.append((
+                info["icon"], 
+                methode, 
+                fmt(info["sec"]), 
+                kleur, 
+                info["sec"], 
+                h_kleur
+            ))
  
         # Container met exact dezelfde instellingen
         container = ctk.CTkFrame(self.drying_frame, fg_color="transparent")
@@ -840,35 +894,50 @@ class LaundryApp(ctk.CTk):
         self.hide_all()
         for w in self.confirm_frame.winfo_children():
             w.destroy()
- 
+
+        # Terug-knop
         ctk.CTkButton(
             self.confirm_frame, text="←", width=40, height=40,
             fg_color="white", text_color="black",
             command=lambda: self.show_drying_options(was_type)
         ).place(relx=0.05, rely=0.05)
- 
-        icon  = {"Buiten": "🌲", "Binnen": "🏠"}.get(methode, "🌀")
-        h_col = {"Buiten": "#00b34a", "Binnen": "#e68f00"}.get(methode, "#e63535")
- 
-        ctk.CTkLabel(self.confirm_frame, text=icon,
-                     font=("Arial Bold", 120), text_color=kleur).pack(pady=(40, 10))
-        ctk.CTkLabel(self.confirm_frame,
-                     text=f"{was_type} was {methode.lower()} drogen",
-                     font=("Arial Bold", 36), text_color=self.text_blue).pack()
- 
+
+        # Icoon bepalen (kleur komt uit het argument)
+        icon = {"Buiten": "🌲", "Binnen": "🏠"}.get(methode, "🌀")
+    
+        # Dynamische hover kleur: 
+        # We maken de hover kleur een tikkeltje donkerder dan de meegegeven kleur
+        # Of we gebruiken een simpele logica:
+        h_col = "#00b34a" if kleur == self.accent_green else "#e68f00" if kleur == self.accent_orange else "#e63535"
+
+        # UI Elementen
+        # Grote icoon gebruikt nu de 'kleur' van de ranking (Groen als het de beste is!)
+        ctk.CTkLabel(
+            self.confirm_frame, text=icon,
+            font=("Arial Bold", 120), text_color=kleur
+        ).pack(pady=(40, 10))
+
+        ctk.CTkLabel(
+            self.confirm_frame,
+            text=f"{was_type} was {methode.lower()} drogen",
+            font=("Arial Bold", 36), text_color=self.text_blue
+        ).pack()
+
         t_txt = f"~{seconden // 3600}u {(seconden % 3600) // 60}m"
-        ctk.CTkLabel(self.confirm_frame,
-                     text=f"Verwachte droogtijd: {t_txt}",
-                     font=("Arial Bold", 22), text_color="black").pack(pady=20)
- 
+        ctk.CTkLabel(
+            self.confirm_frame,
+            text=f"Verwachte droogtijd: {t_txt}",
+            font=("Arial Bold", 22), text_color="black"
+        ).pack(pady=20)
+
+        # De BEVESTIGEN knop krijgt ook de kleur van de ranking
         ctk.CTkButton(
-            self.confirm_frame, text="BEVESTIGEN",
+            self.confirm_frame, text="START TIMER",
             fg_color=kleur, hover_color=h_col, height=70, width=500,
-            corner_radius=20, font=("Arial Bold", 20), text_color="white",
-            command=lambda: self.start_timer(was_type, methode, seconden)
+            corner_radius=20, font=("Arial Bold", 24), text_color="white",
+            command=lambda: self.start_timer_and_show_dashboard(was_type, methode, seconden)
         ).pack(pady=40)
- 
-        self.add_timer(methode, was_type, seconden)
+
         self.confirm_frame.grid(row=0, column=1, sticky="nsew")
         
  
@@ -1151,7 +1220,7 @@ class LaundryApp(ctk.CTk):
 
         # Forceer update van het scherm
         self.compare_frame.update_idletasks()
-        
+
     def show_debug_info(self):
         """Toon een popup met de rauwe sensorwaarden en fouten."""
         debug_win = ctk.CTkToplevel(self)
