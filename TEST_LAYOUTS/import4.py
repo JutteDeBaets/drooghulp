@@ -420,22 +420,34 @@ class LaundryApp(ctk.CTk):
     
     def fetch_energy_prices(self):
         try:
-            # Voorbeeld URL (Enever API voor NL/BE prijzen)
-            url = "https://enever.nl/api/stroomprijs_vandaag.php" 
+            # Energy-Charts API voor België
+            url = "https://api.energy-charts.info/price?country=be" 
             response = requests.get(url, timeout=5)
             data = response.json()
         
-            # Zoek de prijs voor het huidige uur
-            huidig_uur = datetime.now().hour
-            # De data-structuur hangt af van de API die je kiest
-            actuele_prijs = data['data'][huidig_uur]['prijs'] 
-        
-            # Update de UI veilig via after()
-            self.live_energieprijs = actuele_prijs 
-            print(f"Systeem: Live energieprijs bijgewerkt naar €{self.live_energieprijs}")
+            # We halen de huidige tijd in Unix seconden op
+            now_ts = time.time()
+            actuele_prijs = None
+
+            # Energy-Charts geeft een lijst met timestamps en een lijst met prijzen
+            # We zoeken de index van het huidige uur
+            for i, timestamp in enumerate(data['unix_seconds']):
+                # Als de huidige tijd tussen deze timestamp en de volgende (1 uur later) ligt
+                if timestamp <= now_ts < (timestamp + 3600):
+                    # De prijs is in Euro/MWh, dus we delen door 1000 voor kWh
+                    actuele_prijs = data['price'][i] / 1000
+                    break
+
+            if actuele_prijs is not None:
+                # Optioneel: Belgische BTW (6%) toevoegen
+                self.live_energieprijs = round(actuele_prijs * 1.06, 4)
+                print(f"Systeem: Live energieprijs bijgewerkt naar €{self.live_energieprijs} per kWh (incl. BTW)")
+            else:
+                raise ValueError("Geen prijs gevonden voor het huidige tijdstip")
+
         except Exception as e:
-            self.live_energieprijs = 0.28 # Veilige backup
- 
+            print(f"Fout bij ophalen prijs: {e}")
+            self.live_energieprijs = 0.28  # Veilige backup
     # ─────────────────────────────────────────
     #  DROOGTIJD BEREKENING
     # ─────────────────────────────────────────
@@ -508,7 +520,34 @@ class LaundryApp(ctk.CTk):
                     # Update de bestaande widgets (GEEN destroy!)
                     self.timer_ui_elements[i]["pb"].set(procent)
                     self.timer_ui_elements[i]["tijd"].configure(text=tijd_str)
-            
+
+    def bepaal_beste_optie(self):
+        
+        """Analyseert data en geeft advies terug."""
+        binnen_data = self.get_internal_sensor_data()
+        vocht_binnen = binnen_data["vocht"]
+        sec_buiten, sec_binnen, sec_kast = self._bereken_alle_tijden(self.huidig_stoftype)
+    
+        # Buiten (Geen regen en sneller dan binnen of binnen te vochtig)
+        if self.weer_code < 51:
+            if sec_buiten <= sec_binnen or vocht_binnen > 65:
+                return {
+                    "methode": "Buiten",
+                    "waarom": f"Het is droog en buiten duurt het ongeveer {sec_buiten//3600} uur."
+                }
+
+        # Binnen (Vochtigheid veilig)
+        if vocht_binnen < 65:
+            return {
+                "methode": "Binnen",
+                "waarom": f"Buiten is niet ideaal, maar binnen is de vochtigheid ({vocht_binnen}%) oké."
+            }
+
+        # Droogkast
+        return {
+            "methode": "Droger",
+            "waarom": f"Het regent of het is binnen te vochtig ({vocht_binnen}%). Energie: €{self.live_energieprijs:.2f}/kWh."
+        }
     # ─────────────────────────────────────────
     #  SIDEBAR
     # ─────────────────────────────────────────
@@ -614,9 +653,13 @@ class LaundryApp(ctk.CTk):
  
     def show_home(self):
         self.hide_all()
+        # Verwijder oude widgets zodat de nieuwe setup_home_screen alles vers tekent
+        for widget in self.home_frame.winfo_children():
+            widget.destroy()
+        self.setup_home_screen()
         self.home_frame.grid(row=0, column=1, sticky="nsew")
         self.update_sidebar_selection("home")
- 
+
     def show_selection(self):
         self.hide_all()
         self.selection_frame.grid(row=0, column=1, sticky="nsew")
@@ -634,26 +677,50 @@ class LaundryApp(ctk.CTk):
     #  SCHERM 1 – HOME
     # ─────────────────────────────────────────
     def setup_home_screen(self):
+        # 1. Haal advies op
+        advies = self.bepaal_beste_optie()
+    
+        # 2. Kies icoon en tekst
+        if advies["methode"] == "Buiten":
+            display_text = "Hang de was buiten"
+            display_icon = "🌲"
+        elif advies["methode"] == "Binnen":
+            display_text = "Hang de was binnen"
+            display_icon = "🏠"
+        else:
+            display_text = "Steek de was in de droogkast"
+            display_icon = "🌀"
+
+        # 3. UI elementen opbouwen
+        # Grote icoon
         ctk.CTkLabel(
-            self.home_frame, text="🌲", font=("Arial", 120),
+            self.home_frame, text=display_icon, font=("Arial", 120),
             text_color=self.accent_green
         ).pack(expand=True, pady=(60, 0))
- 
+
+        # Hoofdtitel
         ctk.CTkLabel(
-            self.home_frame, text="Hang de was buiten",
+            self.home_frame, text=display_text,
             font=("Arial Bold", 42), text_color="black"
         ).pack(expand=True)
- 
+
+        # Waarom-tekst
+        ctk.CTkLabel(
+            self.home_frame, text=advies["waarom"],
+            font=("Arial", 18), text_color="#4a5568"
+        ).pack(expand=True, pady=(0, 20))
+
+        # Knoppen
         btn_row = ctk.CTkFrame(self.home_frame, fg_color="transparent")
         btn_row.pack(expand=True, pady=(0, 60))
- 
+
         ctk.CTkButton(
             btn_row, text="TIMER INSTELLEN",
             fg_color=self.accent_green, hover_color="#00b34a", text_color="white",
             height=60, width=150, corner_radius=15, font=("Arial Bold", 18),
             command=self.show_selection
         ).pack(side="left", padx=10)
- 
+
         ctk.CTkButton(
             btn_row, text="VERGELIJKING",
             fg_color="#4a5568", hover_color="#2d3748", text_color="white",
