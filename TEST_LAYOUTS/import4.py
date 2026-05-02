@@ -1028,35 +1028,57 @@ class LaundryApp(ctk.CTk):
     #  SCHERM 6 – VERGELIJKING
     # ─────────────────────────────────────────
     def build_comparison_ui(self):
+        # 1. Check of de frame wel bestaat
+        if not hasattr(self, 'compare_frame') or self.compare_frame is None:
+            print("Fout: compare_frame bestaat niet!")
+            return
+
+        # 2. Verwijder oude inhoud (zorgt voor verversing)
+        for widget in self.compare_frame.winfo_children():
+            widget.destroy()
+
+        # 3. Basis layout opbouwen
         inner = ctk.CTkFrame(self.compare_frame, fg_color="#f0f8ff", corner_radius=0)
         inner.pack(fill="both", expand=True)
         inner.grid_columnconfigure((0, 1, 2), weight=1)
- 
+
+        # 4. Sensor data ophalen (koppeling met je Debugger scherm)
+        t_binnen = self._last_temp if self._last_temp is not None else 20.0
+        v_binnen = self._last_hum if self._last_hum is not None else 50.0
+
+        # 5. Buitentemperatuur veilig omzetten
         try:
-            temp_buiten = float(self.huidige_temp.replace("°C", ""))
-        except ValueError:
+            # Filtert alleen de cijfers en punten uit de string "18.5°C" -> "18.5"
+            clean_temp = "".join(filter(lambda x: x in "0123456789.-", str(self.huidige_temp)))
+            temp_buiten = float(clean_temp) if clean_temp else 15.0
+        except:
             temp_buiten = 15.0
- 
-        binnen = self.get_internal_sensor_data()
- 
-        tijd_buiten = self.bereken_droogtijd(
-            temp_buiten, DEFAULT_VOCHT_BUITEN,
-            wind=DEFAULT_WIND_BUITEN, is_buiten=True, stof_type=self.huidig_stoftype
-        )
-        tijd_binnen = self.bereken_droogtijd(
-            binnen["temp"], binnen["vocht"],
-            wind=0, is_buiten=False, stof_type=self.huidig_stoftype
-        )
-        tijd_droger = round(self.KAST_SECONDEN[self.huidig_stoftype] / 3600, 1)
- 
+
+        # 6. Droogtijden berekenen (gebruikt nu de juiste variabelen)
+        try:
+            tijd_buiten = self.bereken_droogtijd(
+                temp_buiten, DEFAULT_VOCHT_BUITEN, 
+                wind=DEFAULT_WIND_BUITEN, is_buiten=True, stof_type=self.huidig_stoftype
+            )
+            tijd_binnen = self.bereken_droogtijd(
+                t_binnen, v_binnen, 
+                wind=0, is_buiten=False, stof_type=self.huidig_stoftype
+            )
+            tijd_droger = round(self.KAST_SECONDEN[self.huidig_stoftype] / 3600, 1)
+        except Exception as e:
+            print(f"Fout bij berekenen droogtijd: {e}")
+            tijd_buiten, tijd_binnen, tijd_droger = 0, 0, 0
+
+        # Titel
         ctk.CTkLabel(
             inner,
             text=f"Vergelijking ({self.huidig_stoftype} was)",
             font=("Arial Bold", 32), text_color="black"
         ).grid(row=0, column=0, columnspan=3, pady=(30, 20))
- 
+
         prijs_per_beurt = self.live_energieprijs * 2.5
- 
+
+        # 7. De Data Lijst (Let op: binnen['temp'] is hier vervangen door t_binnen)
         data_lijst = [
             {
                 "t":    "Buiten drogen",
@@ -1072,8 +1094,8 @@ class LaundryApp(ctk.CTk):
                 "t":    "Binnen drogen",
                 "d":    f"droogtijd {tijd_binnen}u",
                 "k":    "Gratis",
-                "temp": f"{binnen['temp']}°C",
-                "v":    f"vocht {binnen['vocht']}%",
+                "temp": f"{t_binnen}°C",
+                "v":    f"vocht {v_binnen}%",
                 "ex":   "Sensor data\nvan Pi",
                 "ex_c": "transparent",
                 "h":    tijd_binnen < tijd_buiten,
@@ -1081,7 +1103,7 @@ class LaundryApp(ctk.CTk):
             {
                 "t": "Droogkast",
                 "d": f"droogtijd {tijd_droger}u",
-                "k": f"kost: €{prijs_per_beurt:.2f}", # <--- Hier wordt het dynamisch!
+                "k": f"kost: €{prijs_per_beurt:.2f}",
                 "temp": "/",
                 "v": "/",
                 "ex": f"Nu: €{self.live_energieprijs}/kWh",
@@ -1089,42 +1111,47 @@ class LaundryApp(ctk.CTk):
                 "h": False,
             },
         ]
- 
+
+        # 8. De Tabel tekenen
         for i, item in enumerate(data_lijst):
             col = ctk.CTkFrame(inner, fg_color="transparent")
             col.grid(row=1, column=i, sticky="nsew", padx=10)
- 
+
             ctk.CTkLabel(col, text=item["t"],
                          font=("Arial Bold", 22), text_color="black").pack()
             ctk.CTkFrame(col, height=2, width=140, fg_color="black").pack(pady=10)
- 
-            tijd_kleur    = "#27ae60" if item["h"] else "transparent"
+
+            tijd_kleur     = "#27ae60" if item["h"] else "transparent"
             tijd_txt_kleur = "white"  if item["h"] else "black"
+            
             ctk.CTkLabel(col, text=item["d"], font=("Arial", 18),
                          text_color=tijd_txt_kleur, fg_color=tijd_kleur,
                          corner_radius=6, width=160, height=32).pack(pady=5)
- 
+
             ctk.CTkLabel(col, text=item["k"], font=("Arial Bold", 18),
                          text_color="white", fg_color="#27ae60",
                          corner_radius=6, width=180, height=35).pack(pady=15)
- 
+
             ctk.CTkLabel(col, text=item["temp"],
                          font=("Arial", 18), text_color="black").pack()
             ctk.CTkLabel(col, text=item["v"],
                          font=("Arial", 18), text_color="black").pack(pady=5)
- 
+
             if item["ex"]:
                 ex_c = item["ex_c"] if item["ex_c"] != "transparent" else "transparent"
                 box  = ctk.CTkFrame(col, fg_color=ex_c, corner_radius=8)
                 box.pack(pady=20, padx=10)
                 ctk.CTkLabel(box, text=item["ex"], font=("Arial", 15),
                              text_color="black", padx=10, pady=5).pack()
- 
+
             if i < 2:
-                ctk.CTkFrame(inner, width=2, fg_color="#444").grid(
-                    row=1, column=i, sticky="nse", pady=(0, 40)
-                )
-    
+                # Scheidingslijnen tussen kolommen
+                sep = ctk.CTkFrame(inner, width=2, fg_color="#444")
+                sep.grid(row=1, column=i, sticky="nse", pady=(0, 40))
+
+        # Forceer update van het scherm
+        self.compare_frame.update_idletasks()
+        
     def show_debug_info(self):
         """Toon een popup met de rauwe sensorwaarden en fouten."""
         debug_win = ctk.CTkToplevel(self)
