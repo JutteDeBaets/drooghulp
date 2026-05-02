@@ -1230,8 +1230,8 @@ class LaundryApp(ctk.CTk):
 
         binnen = self.get_internal_sensor_data()
     
-        info = f"DHT Temp: {self._last_temp}\n"
-        info += f"DHT Vocht: {self._last_hum}\n"
+        info = f"DHT Temp: {binnen['temp']}\n"
+        info += f"DHT Vocht: {binnen['vocht']}\n"
         info += f"Sound ADC: {binnen['geluid']}V\n"
         info += f"On Pi: {ON_PI}\n"
         info += f"Next DHT Read: {round(self._next_dht_time - time.monotonic(), 1)}s"
