@@ -319,38 +319,33 @@ class LaundryApp(ctk.CTk):
             print(f"Locatie fout: {e}")
             return {"city": DEFAULT_CITY, "lat": DEFAULT_LAT, "lon": DEFAULT_LON}
  
-    def _fetch_weather(self, lat, lon):
+    def _fetch_weather(self, lat: float, lon: float) -> int:
         try:
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&hourly=relative_humidity_2m,precipitation&forecast_days=1"
-            response = requests.get(url, timeout=5)
-            data = response.json()
-        
-            current = data["current_weather"]
-            return {
-                "temp": current["temperature"],
-                "code": int(current["weathercode"]), # Zorg dat dit een int is
-                "humidity": data["hourly"]["relative_humidity_2m"][0],
-                "precip": data["hourly"]["precipitation"][0]
-            }
+            url = (
+                f"https://api.open-meteo.com/v1/forecast"
+                f"?latitude={lat}&longitude={lon}&current_weather=true"
+            )
+            with urlopen(url, timeout=5) as r:
+                data = json.load(r)
+                current = data["current_weather"]
+                self.huidige_temp = f"{current['temperature']}°C"
+                return int(current["weathercode"])
         except Exception as e:
-            print(f"Weather error: {e}")
-            return {"temp": 15, "code": 0, "humidity": 60, "precip": 0}
+            print(f"Weer fout: {e}")
+            self.huidige_temp = "--°C"
+            return 0
  
-    def _apply_weather(self, locatie, weer_data):
-        if isinstance(weer_data, dict):
-            self.locatie = locatie
-            self.weer_code = weer_data.get("code", 0)
-            self.huidige_temp = f"{weer_data.get('temp', 15)}°C"
-            self.huidige_vocht_buiten = weer_data.get("humidity", 60)
-            self.huidige_neerslag = weer_data.get("precip", 0)
-        else:
-            self.weer_code = 0
-
-        # Update alleen de labels, herbouw NIET het hele scherm
-        if hasattr(self, 'stad_label'):
-            self.stad_label.configure(text=self.locatie.get("city", DEFAULT_CITY))
-        if hasattr(self, 'weer_icon'):
-            self.weer_icon.configure(text=self._weer_icon(self.weer_code))
+    def _apply_weather(self, locatie: dict, weer_code: int):
+        """Pas gecachte waarden toe en update de UI-widget."""
+        self.locatie   = locatie
+        self.weer_code = weer_code
+        icon = self._weer_icon(weer_code)
+        tijd = datetime.now().strftime("%a %d/%m, %H:%M")
+ 
+        # Update bestaande labels (aangemaakt in setup_bovenhoek)
+        self.weer_icon.configure(text=icon)
+        self.stad_label.configure(text=locatie["city"])
+        self.tijd_label.configure(text=tijd)
  
     @staticmethod
     def _weer_icon(code: int) -> str:
@@ -415,7 +410,7 @@ class LaundryApp(ctk.CTk):
  
         # Gebruik gecachte waarden; valt terug op veilige standaardwaarden
         temp  = self._last_temp if self._last_temp is not None else 15.0
-        vocht = self._last_hum  if self._last_hum  is not None else 50.0
+        vocht = self._last_hum  if self._last_hum  is not None else 80.0
  
         return {
             "temp":   round(temp,  1),
@@ -476,42 +471,22 @@ class LaundryApp(ctk.CTk):
     def _bereken_alle_tijden(self, was_type: str) -> tuple[int, int, int]:
         """Geeft (sec_buiten, sec_binnen, sec_kast) terug."""
         try:
-            # Haal alleen het getal uit de temperatuur string
-            temp_buiten = float("".join(filter(lambda x: x in "0123456789.-", str(self.huidige_temp))))
-        except (ValueError, AttributeError):
+            temp_buiten = float(self.huidige_temp.replace("°C", ""))
+        except ValueError:
             temp_buiten = 15.0
-
+ 
         binnen = self.get_internal_sensor_data()
-
-        # Gebruik live vochtigheid of fallback naar 60%
-        vocht_buiten = getattr(self, 'huidige_vocht_buiten', 60)
-
-        # 1. Buiten berekenen
+ 
         sec_buiten = int(self.bereken_droogtijd(
-            temp_buiten, vocht_buiten, 
+            temp_buiten, DEFAULT_VOCHT_BUITEN,
             wind=DEFAULT_WIND_BUITEN, is_buiten=True, stof_type=was_type
         ) * 3600)
-        
-        # Als het regent of gaat regenen, zet de tijd op "onmogelijk" (999 uur)
-        # Zo wordt het in bepaal_beste_optie direct naar de laatste plek verwezen.
-        if getattr(self, 'huidige_neerslag', 0) > 0:
-            sec_buiten = 999 * 3600
-
-        # 2. Binnen berekenen
         sec_binnen = int(self.bereken_droogtijd(
             binnen["temp"], binnen["vocht"],
             wind=0, is_buiten=False, stof_type=was_type
         ) * 3600)
-    
-        # 3. Droogkast berekenen (DE FIX VOOR DE KEYERROR)
-        # We halen het woord ' was' weg als dat erachter staat (bijv. "Licht was" -> "Licht")
-        zoek_term = was_type.replace(" was", "").strip()
-        
-        # Gebruik .get() zodat het programma nooit meer crasht op een naamfout
-        sec_kast = self.KAST_SECONDEN.get(zoek_term, self.KAST_SECONDEN.get("Gemiddeld", 4500))
-
-        return sec_buiten, sec_binnen, sec_kast
-
+        sec_kast = self.KAST_SECONDEN[was_type]
+ 
         return sec_buiten, sec_binnen, sec_kast
     def add_timer(self, methode, was_type, seconden):
         # Voeg een nieuwe timer toe aan de lijst
@@ -547,52 +522,43 @@ class LaundryApp(ctk.CTk):
                     self.timer_ui_elements[i]["tijd"].configure(text=tijd_str)
 
     def bepaal_beste_optie(self):
-        """Analyseert data volgens strikte hiërarchie: Buiten > Binnen > Droger."""
+        """Analyseert data en geeft een gerangschikte lijst op basis van tijd, weer en kosten."""
         binnen_data = self.get_internal_sensor_data()
         vocht_binnen = binnen_data["vocht"]
-    
-        # Haal de berekende tijden op (deze houden al rekening met de nieuwe API data)
         sec_buiten, sec_binnen, sec_kast = self._bereken_alle_tijden(self.huidig_stoftype)
-    
-        # 1. Controleer of BUITEN mogelijk is
-        # Regels: niet regenen (weercode < 51), geen neerslag in API, en tijd < 10 uur
-        is_aan_het_regenen = self.weer_code >= 51
-        gaat_regenen = getattr(self, 'huidige_neerslag', 0) > 0
-        tijd_ok_buiten = (sec_buiten / 3600) <= 10
 
-        buiten_mogelijk = not is_aan_het_regenen and not gaat_regenen and tijd_ok_buiten
-
-        # 2. Controleer of BINNEN mogelijk is
-        # Regels: vochtigheid niet te hoog (< 65%) en tijd < 15 uur
-        tijd_ok_binnen = (sec_binnen / 3600) <= 15
-        vocht_ok_binnen = vocht_binnen < 65
-    
-        binnen_mogelijk = tijd_ok_binnen and vocht_ok_binnen
-
-        # 3. Rangschikking bepalen volgens jouw voorkeur
-        # We gebruiken een hele hoge score (strafpunten) om opties die niet mogen te blokkeren
         scores = []
 
-        # Buiten is voorkeur 1
-        if buiten_mogelijk:
-            scores.append(("Buiten", 1)) # Laagste score = hoogste prioriteit
-        else:
-            scores.append(("Buiten", 999999)) # Wordt nooit aanbevolen
+        # 1. Buiten Score
+        buiten_score = sec_buiten
+        # BONUS: Als de zon schijnt (weercode 0-3) en het is niet te vochtig, geef bonus
+        if self.weer_code <= 3:
+            buiten_score -= 3600  # Trek virtueel een uur van de tijd af als 'beloning'
+        # STRAF: Als het regent, maak het onmogelijk
+        if self.weer_code >= 51:
+            buiten_score += 1000000 
+        scores.append(("Buiten", buiten_score))
 
-        # Binnen is voorkeur 2
-        if binnen_mogelijk:
-            scores.append(("Binnen", 2))
-        else:
-            scores.append(("Binnen", 888888)) # Wordt nooit aanbevolen
+        # 2. Binnen Score
+        binnen_score = sec_binnen
+        if vocht_binnen > 65:
+            binnen_score += 500000 
+        scores.append(("Binnen", binnen_score))
 
-        # Droger is voorkeur 3 (altijd mogelijk als noodoplossing)
-        scores.append(("Droger", 3))
-
-        # Sorteer de lijst
-        gerangschikt = sorted(scores, key=lambda x: x[1])
+        # 3. Droger Score
+        # We berekenen de 'kostprijs-straf'. 
+        # Hoe duurder de stroom, hoe hoger de score (en dus hoe slechter de optie).
+        # Een droogbeurt verbruikt gemiddeld 2.5 kWh.
+        stroom_straf = self.live_energieprijs * 2.5 * 3600 # We rekenen euro's om naar 'tijd-punten'
     
-        # Filter de gerangschikte lijst zodat we de 'onmogelijke' opties niet tonen
-        # or onderaan zetten in de UI.
+        # We geven de droger ook een basis-straf omdat we liever gratis drogen
+        basis_straf_droger = 7200 # 2 uur extra strafpunten voor het milieu/portemonnee
+    
+        droger_score = sec_kast + stroom_straf + basis_straf_droger
+        scores.append(("Droger", droger_score))
+
+        # Sorteer: Laagste score is de beste keuze
+        gerangschikt = sorted(scores, key=lambda x: x[1])
         return gerangschikt
     # ─────────────────────────────────────────
     #  SIDEBAR
@@ -648,37 +614,30 @@ class LaundryApp(ctk.CTk):
     #  BOVENHOEK (weer-widget)
     # ─────────────────────────────────────────
     def setup_bovenhoek(self):
-        """Bouwt het widget in een horizontale lijn met een verticale divider."""
-        # Weerframe aanpassen: transparant of wit (jouw keuze), relx/rely zoals voorheen
+        """Bouw het widget; vult alvast met placeholders – _apply_weather update later."""
         self.weer_frame = ctk.CTkFrame(self, fg_color="white", corner_radius=15)
-        self.weer_frame.place(relx=0.97, rely=0.03, anchor="ne") # Iets hoger gezet (0.03) voor ademruimte
-
-        # 1. Weer-icoon
+        self.weer_frame.place(relx=0.97, rely=0.05, anchor="ne")
+ 
         self.weer_icon = ctk.CTkLabel(
-            self.weer_frame, text="☀️", # Placeholder zonnetje
-            font=("Arial", 24), text_color=self.bg_dark
+            self.weer_frame, text="⏳",
+            font=("Arial", 28), text_color=self.bg_dark
         )
-        self.weer_icon.pack(side="left", padx=(15, 0), pady=8)
-
-        # 2. Stad Label
+        self.weer_icon.pack(side="left", padx=(15, 2), pady=5)
+ 
+        tekst_container = ctk.CTkFrame(self.weer_frame, fg_color="transparent")
+        tekst_container.pack(side="left", padx=(0, 15), pady=5)
+ 
         self.stad_label = ctk.CTkLabel(
-            self.weer_frame, text="Laden…",
-            font=("Arial Bold", 16), text_color=self.bg_dark
+            tekst_container, text="Laden…",
+            font=("Arial", 12), text_color="#666"
         )
-        self.stad_label.pack(side="left", padx=(0,0))
-
-        # 3. Verticale Divider (Het streepje)
-        divider = ctk.CTkFrame(self.weer_frame, width=2, height=20, fg_color="#ccc")
-        divider.pack(side="left", padx=10)
-
-        # 4. Tijd Label
-        # Format aangepast naar je foto: "HH:MM zo d/m"
-        nu_tijd = datetime.now().strftime("%H:%M %a %d/%m").lower()
+        self.stad_label.pack(anchor="e")
+ 
         self.tijd_label = ctk.CTkLabel(
-            self.weer_frame, text=nu_tijd,
-            font=("Arial Bold", 16), text_color=self.bg_dark
+            tekst_container, text=datetime.now().strftime("%a %d/%m, %H:%M"),
+            font=("Arial", 12), text_color="#666"
         )
-        self.tijd_label.pack(side="left", padx=(5, 15))
+        self.tijd_label.pack(anchor="e")
  
     # ─────────────────────────────────────────
     #  FRAMES INITIALISEREN
@@ -1140,176 +1099,146 @@ class LaundryApp(ctk.CTk):
     def build_comparison_ui(self):
         # 1. Check of de frame wel bestaat
         if not hasattr(self, 'compare_frame') or self.compare_frame is None:
+            print("Fout: compare_frame bestaat niet!")
             return
 
-        # 2. Verwijder oude inhoud
+        # Annuleer vorige refresh-timer als die nog loopt
+        if hasattr(self, '_compare_refresh_id') and self._compare_refresh_id:
+            self.after_cancel(self._compare_refresh_id)
+            self._compare_refresh_id = None
+
+        # 2. Verwijder oude inhoud (zorgt voor verversing)
         for widget in self.compare_frame.winfo_children():
             widget.destroy()
 
-        # 3. Basis layout
+        # 3. Basis layout opbouwen
         inner = ctk.CTkFrame(self.compare_frame, fg_color="#f0f8ff", corner_radius=0)
         inner.pack(fill="both", expand=True)
         inner.grid_columnconfigure((0, 1, 2), weight=1)
 
-        # 4. Data ophalen
+        # 4. Sensor data ophalen
         binnen = self.get_internal_sensor_data()
-        v_buiten = getattr(self, 'huidige_vocht_buiten', 60)
-        neerslag = getattr(self, 'huidige_neerslag', 0)
-        
-        ranking = self.bepaal_beste_optie()
-        ranking_namen = [r[0] for r in ranking]
-        
-        # Kleuren toewijzen op basis van de NIEUWE rangschikking
-        # De nummer 1 (ranking_namen[0]) krijgt altijd groen, mits niet 'onmogelijk'
-        rank_kleuren = {}
-        for naam, score in ranking:
-            
-            if naam == ranking_namen[0]:
-                rank_kleuren[naam] = self.accent_green
-            elif naam == ranking_namen[1]:
-                rank_kleuren[naam] = self.accent_orange
-            else:
-                rank_kleuren[naam] = self.accent_red
+        t_binnen = binnen['temp']
+        v_binnen = binnen['vocht']
 
-        # 5. Droogtijden
-        sec_buiten, sec_binnen, sec_kast = self._bereken_alle_tijden(self.huidig_stoftype)
-        tijd_buiten = round(sec_buiten / 3600, 1)
-        tijd_binnen = round(sec_binnen / 3600, 1)
-        tijd_droger = round(sec_kast / 3600, 1)
+        # 5. Buitentemperatuur veilig omzetten
+        try:
+            # Filtert alleen de cijfers en punten uit de string "18.5°C" -> "18.5"
+            clean_temp = "".join(filter(lambda x: x in "0123456789.-", str(self.huidige_temp)))
+            temp_buiten = float(clean_temp) if clean_temp else 15.0
+        except:
+            temp_buiten = 15.0
 
-        # 6. Data lijst configureren
-        # We passen hier de vochtigheid en de regen-uitleg aan
-        regen_tekst = "Droog voorspeld"
-        regen_kleur = "transparent"
-        if neerslag > 0:
-            regen_tekst = f"REGEN: {neerslag}mm"
-            regen_kleur = "#ff3b3b" # Fel rood bij regen
-        elif tijd_buiten > 10:
-            regen_tekst = "Te traag buiten"
-            regen_kleur = "#f39c12"
+        # 6. Droogtijden berekenen (gebruikt nu de juiste variabelen)
+        try:
+            tijd_buiten = self.bereken_droogtijd(
+                temp_buiten, DEFAULT_VOCHT_BUITEN, 
+                wind=DEFAULT_WIND_BUITEN, is_buiten=True, stof_type=self.huidig_stoftype
+            )
+            tijd_binnen = self.bereken_droogtijd(
+                t_binnen, v_binnen, 
+                wind=0, is_buiten=False, stof_type=self.huidig_stoftype
+            )
+            tijd_droger = round(self.KAST_SECONDEN[self.huidig_stoftype] / 3600, 1)
+        except Exception as e:
+            print(f"Fout bij berekenen droogtijd: {e}")
+            tijd_buiten, tijd_binnen, tijd_droger = 0, 0, 0
 
+        # Titel
+        ctk.CTkLabel(
+            inner,
+            text=f"Vergelijking ({self.huidig_stoftype} was)",
+            font=("Arial Bold", 32), text_color="black"
+        ).grid(row=0, column=0, columnspan=3, pady=(30, 20))
+
+        prijs_per_beurt = self.live_energieprijs * 2.5
+
+        # 7. De Data Lijst (Let op: binnen['temp'] is hier vervangen door t_binnen)
         data_lijst = [
             {
-                "id":   "Buiten",
                 "t":    "Buiten drogen",
-                "d":    "NIET MOGELIJK" if tijd_buiten > 50 else f"droogtijd {tijd_buiten}u",
+                "d":    f"droogtijd {tijd_buiten}u",
                 "k":    "Gratis",
-                "temp": self.huidige_temp,
-                "v":    f"vocht {v_buiten}%", # LIVE VOCHT
-                "ex":   regen_tekst,          # REGEN DATA[cite: 2]
-                "ex_c": regen_kleur,
-                "h":    ranking_namen[0] == "Buiten",
+                "temp": f"{temp_buiten}°C",
+                "v":    f"vocht {DEFAULT_VOCHT_BUITEN}%",
+                "ex":   "Gebaseerd op\nweerbericht",
+                "ex_c": "#f39c12" if self.weer_code > 0 else "transparent",
+                "h":    tijd_buiten < tijd_binnen,
             },
             {
-                "id":   "Binnen",
                 "t":    "Binnen drogen",
                 "d":    f"droogtijd {tijd_binnen}u",
                 "k":    "Gratis",
-                "temp": f"{binnen['temp']}°C",
-                "v":    f"vocht {binnen['vocht']}%",
-                "ex":   "Lucht te vochtig" if binnen['vocht'] > 65 else "Sensor data Pi",
-                "ex_c": "#f39c12" if binnen['vocht'] > 65 else "transparent",
-                "h":    ranking_namen[0] == "Binnen",
+                "temp": f"{t_binnen}°C",
+                "v":    f"vocht {v_binnen}%",
+                "ex":   "Sensor data\nvan Pi",
+                "ex_c": "transparent",
+                "h":    tijd_binnen < tijd_buiten,
             },
             {
-                "id":   "Droger",
-                "t":    "Droogkast",
-                "d":    f"droogtijd {tijd_droger}u",
-                "k":    f"kost: €{self.live_energieprijs * 2.5:.2f}",
+                "t": "Droogkast",
+                "d": f"droogtijd {tijd_droger}u",
+                "k": f"kost: €{prijs_per_beurt:.2f}",
                 "temp": "/",
-                "v":    "/",
-                "ex":   f"Stroom: €{self.live_energieprijs}/kWh",
+                "v": "/",
+                "ex": f"Nu: €{self.live_energieprijs}/kWh",
                 "ex_c": "transparent",
-                "h":    ranking_namen[0] == "Droger",
+                "h": False,
             },
         ]
 
-        # 7. UI Tekenen (Titel en Tabel)
-        # 7. UI Tekenen (Titel en Tabel)
-        titel_container = ctk.CTkFrame(inner, fg_color="transparent")
-        titel_container.grid(row=0, column=0, columnspan=3, pady=(60, 30))
-        
-        ctk.CTkLabel(
-            titel_container, 
-            text="Vergelijking: ", 
-            font=("Arial Bold", 28), 
-            text_color="black"
-        ).pack(side="left")
-
-        # DE HERSTELDE KNOP:
-        self.stof_button = ctk.CTkButton(
-            titel_container,
-            text=f"{self.huidig_stoftype} was",
-            command=self._open_stof_menu,
-            font=("Arial Bold", 24),
-            fg_color="#1a66ff",
-            hover_color="#0052cc",
-            text_color="white",
-            width=160,
-            height=45,
-            corner_radius=12
-        )
-        self.stof_button.pack(side="left", padx=10)
-
+        # 8. De Tabel tekenen
         for i, item in enumerate(data_lijst):
             col = ctk.CTkFrame(inner, fg_color="transparent")
             col.grid(row=1, column=i, sticky="nsew", padx=10)
 
-            titel_kleur = rank_kleuren.get(item["id"], "black")
-            ctk.CTkLabel(col, text=item["t"], font=("Arial Bold", 22), text_color=titel_kleur).pack()
-            ctk.CTkFrame(col, height=2, width=140, fg_color=titel_kleur).pack(pady=10)
+            ctk.CTkLabel(col, text=item["t"],
+                         font=("Arial Bold", 22), text_color="black").pack()
+            ctk.CTkFrame(col, height=2, width=140, fg_color="black").pack(pady=10)
 
-            # Highlight de beste optie met een badge[cite: 2]
-            tijd_bg = "#27ae60" if item["h"] else "transparent"
-            tijd_fg = "white" if item["h"] else "black"
+            tijd_kleur     = "#27ae60" if item["h"] else "transparent"
+            tijd_txt_kleur = "white"  if item["h"] else "black"
+            
+            ctk.CTkLabel(col, text=item["d"], font=("Arial", 18),
+                         text_color=tijd_txt_kleur, fg_color=tijd_kleur,
+                         corner_radius=6, width=160, height=32).pack(pady=5)
 
-            ctk.CTkLabel(col, text=item["d"], font=("Arial", 18), text_color=tijd_fg, 
-                         fg_color=tijd_bg, corner_radius=6, width=170, height=35).pack(pady=5)
+            ctk.CTkLabel(col, text=item["k"], font=("Arial Bold", 18),
+                         text_color="white", fg_color="#27ae60",
+                         corner_radius=6, width=180, height=35).pack(pady=15)
 
-            ctk.CTkLabel(col, text=item["k"], font=("Arial Bold", 18), text_color="white", 
-                         fg_color="#27ae60", corner_radius=6, width=180, height=35).pack(pady=15)
+            ctk.CTkLabel(col, text=item["temp"],
+                         font=("Arial", 18), text_color="black").pack()
+            ctk.CTkLabel(col, text=item["v"],
+                         font=("Arial", 18), text_color="black").pack(pady=5)
 
-            ctk.CTkLabel(col, text=item["temp"], font=("Arial", 18), text_color="black").pack()
-            ctk.CTkLabel(col, text=item["v"], font=("Arial", 18), text_color="black").pack(pady=5)
-
-            # Extra info box (Regen / Vocht waarschuwingen)[cite: 2]
             if item["ex"]:
-                box = ctk.CTkFrame(col, fg_color=item["ex_c"], corner_radius=8)
+                ex_c = item["ex_c"] if item["ex_c"] != "transparent" else "transparent"
+                box  = ctk.CTkFrame(col, fg_color=ex_c, corner_radius=8)
                 box.pack(pady=20, padx=10)
-                ctk.CTkLabel(box, text=item["ex"], font=("Arial Bold", 14), text_color="black" if item["ex_c"] == "transparent" else "white", padx=10, pady=5).pack()
+                ctk.CTkLabel(box, text=item["ex"], font=("Arial", 15),
+                             text_color="black", padx=10, pady=5).pack()
 
             if i < 2:
-                sep = ctk.CTkFrame(inner, width=2, fg_color="#ccc")
+                # Scheidingslijnen tussen kolommen
+                sep = ctk.CTkFrame(inner, width=2, fg_color="#444")
                 sep.grid(row=1, column=i, sticky="nse", pady=(0, 40))
 
+        # Forceer update van het scherm
         self.compare_frame.update_idletasks()
-    
-    def _open_stof_menu(self):
-        """Opent een dropdown menu zonder pijltjes-icoon."""
-        import tkinter as tk
-    
-        # Maak het menu aan
-        menu = tk.Menu(self, tearoff=0, font=("Arial", 14))
-    
-        # Voeg de opties toe
-        for optie in ["Licht was", "Gemiddeld was", "Zwaar was"]:
-            menu.add_command(
-                label=optie, 
-                command=lambda o=optie: self._update_comparison_type(o)
-            )
-    
-        # Toon het menu direct onder de muisklik
-        try:
-            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
-        finally:
-            menu.grab_release()
 
-    def _update_comparison_type(self, nieuw_type):
-        """Update het stoftype en ververs direct het scherm."""
-        self.huidig_stoftype = nieuw_type.replace(" was", "").strip()
-        self.show_comparison()
+        # Plan automatische verversing elke 2 seconden
+        def _refresh():
+            if not hasattr(self, 'compare_frame') or self.compare_frame is None:
+                return
+            if not self.compare_frame.winfo_exists():
+                return
+            self.build_comparison_ui()
+
+        self._compare_refresh_id = self.after(2000, _refresh)
 
     def show_debug_info(self):
+        """Toon een popup met de rauwe sensorwaarden en fouten."""
         debug_win = ctk.CTkToplevel(self)
         debug_win.title("Sensor Debugger")
         debug_win.geometry("400x300")
@@ -1329,7 +1258,7 @@ class LaundryApp(ctk.CTk):
             info += f"On Pi: {ON_PI}\n"
             info += f"Next DHT Read: {round(self._next_dht_time - time.monotonic(), 1)}s"
             info_label.configure(text=info)
-            debug_win.after(2000, _refresh)  # Elke 2s verversen
+            debug_win.after(2000, _refresh)
 
         _refresh()
     
