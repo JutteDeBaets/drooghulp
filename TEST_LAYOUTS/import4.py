@@ -326,11 +326,15 @@ class LaundryApp(ctk.CTk):
             data = response.json()
         
             current = data["current_weather"]
+
+            # Huidig uur bepalen zodat we het juiste uurvak pakken
+            huidig_uur = datetime.now().hour
+
             return {
-                "temp": current["temperature"],
-                "code": int(current["weathercode"]), # Zorg dat dit een int is
-                "humidity": data["hourly"]["relative_humidity_2m"][0],
-                "precip": data["hourly"]["precipitation"][0]
+                "temp":     current["temperature"],
+                "code":     int(current["weathercode"]),
+                "humidity": data["hourly"]["relative_humidity_2m"][huidig_uur],
+                "precip":   data["hourly"]["precipitation"][huidig_uur]
             }
         except Exception as e:
             print(f"Weather error: {e}")
@@ -543,8 +547,12 @@ class LaundryApp(ctk.CTk):
                     tijd_str = f"{timer['resterend']//3600:02d}:{(timer['resterend']%3600)//60:02d}:{timer['resterend']%60:02d}"
                     
                     # Update de bestaande widgets (GEEN destroy!)
-                    self.timer_ui_elements[i]["pb"].set(procent)
-                    self.timer_ui_elements[i]["tijd"].configure(text=tijd_str)
+                    try:
+                        self.timer_ui_elements[i]["pb"].set(procent)
+                        self.timer_ui_elements[i]["tijd"].configure(text=tijd_str)
+                    except Exception:
+                        self.timer_ui_elements = {}
+                        break
 
     def bepaal_beste_optie(self):
         """Analyseert data volgens strikte hiërarchie: Buiten > Binnen > Droger."""
@@ -846,88 +854,82 @@ class LaundryApp(ctk.CTk):
         for w in self.drying_frame.winfo_children():
             w.destroy()
         
-        # Terug-knop (exact zoals in je voorbeeld)
+        # Terug-knop
         ctk.CTkButton(
             self.drying_frame, text="←", width=40, height=40,
             fg_color="white", text_color="black", command=self.show_selection
         ).place(relx=0.05, rely=0.05)
- 
-        # Titel (Zelfde font en padding als je selectiescherm)
+
+        # Titel
         ctk.CTkLabel(
             self.drying_frame,
             text=f"Kies een methode voor {was_type} was",
             font=("Arial Bold", 32), text_color="black"
         ).pack(pady=(60, 40))
- 
-        # --- DATA BEREKENEN ---
+
+        # --- DATA & RANKING OPHALEN ---
         sec_buiten, sec_binnen, sec_kast = self._bereken_alle_tijden(was_type)
+        ranking = self.bepaal_beste_optie() # Dit geeft je [("Naam", score), ...]
         
-        # Roep je logica aan om de volgorde te bepalen
-        # Deze functie moet een lijst teruggeven, bijv: [("Buiten", score), ("Binnen", score), ...]
-        ranking = self.bepaal_beste_optie() 
-        
+        # Maak een lijst van namen gesorteerd op beste keuze (laagste score eerst)
+        ranking_namen = [r[0] for r in ranking]
+
         def fmt(s: int) -> str:
+            # Als de tijd de strafscore heeft (99u of meer), toon "Niet mogelijk"
+            if s >= 300000: return "Niet mogelijk"
             return f"~{s // 3600}u {(s % 3600) // 60}m"
 
-        # Mapping van methode naar data
+        # Kleuren toewijzen op basis van RANK (0=Groen, 1=Oranje, 2=Rood)
+        rank_kleuren_map = [
+            (self.accent_green, "#00b34a"),  # Beste keuze
+            (self.accent_orange, "#e68f00"), # Tweede keuze
+            (self.accent_red, "#e63535")     # Derde keuze
+        ]
+
+        # VASTE VOLGORDE voor de knoppen op het scherm
+        vaste_volgorde = ["Buiten", "Binnen", "Droger"]
         data_map = {
             "Buiten": {"icon": "🌲", "sec": sec_buiten},
             "Binnen": {"icon": "🏠", "sec": sec_binnen},
             "Droger": {"icon": "🌀", "sec": sec_kast}
         }
 
-        # Kleurenschema voor ranking
-        rank_kleuren = [
-            (self.accent_green, "#00b34a"),  # 1ste plaats (Beste)
-            (self.accent_orange, "#e68f00"), # 2de plaats
-            (self.accent_red, "#e63535")     # 3de plaats (Slechtste)
-        ]
-
-        opties = []
-        # Bouw de opties lijst op basis van de ranking
-        for index, (methode, score) in enumerate(ranking):
-            kleur, h_kleur = rank_kleuren[index]
-            info = data_map[methode]
-            
-            opties.append((
-                info["icon"], 
-                methode, 
-                fmt(info["sec"]), 
-                kleur, 
-                info["sec"], 
-                h_kleur
-            ))
- 
-        # Container met exact dezelfde instellingen
+        # Container bouwen
         container = ctk.CTkFrame(self.drying_frame, fg_color="transparent")
         container.pack(expand=True, fill="both", padx=40)
         container.grid_columnconfigure((0, 1, 2), weight=1)
- 
-        for i, (icon, label, t_txt, kleur, t_sec, h_kleur) in enumerate(opties):
-            # Height=250 zoals in je voorbeeld
+
+        # Knoppen tekenen in de vaste volgorde
+        for i, methode in enumerate(vaste_volgorde):
+            info = data_map[methode]
+            
+            # Bepaal kleur: kijk waar de methode staat in de gesorteerde ranking_namen lijst
+            rank_pos = ranking_namen.index(methode)
+            kleur, h_kleur = rank_kleuren_map[rank_pos]
+
             btn = ctk.CTkButton(
                 container, fg_color=kleur, hover_color=h_kleur,
                 corner_radius=25, height=250, text="",
-                command=lambda l=label, s=t_sec, k=kleur: self.show_confirmation(was_type, l, s, k)
+                command=lambda l=methode, s=info["sec"], k=kleur: self.show_confirmation(was_type, l, s, k)
             )
             btn.grid(row=0, column=i, sticky="nsew", padx=15)
             btn.grid_columnconfigure(0, weight=1)
- 
-            # Icon en Labels met verdeling voor de 250px hoogte
-            l1 = ctk.CTkLabel(btn, text=icon, font=("Arial Bold", 70), text_color="white")
+
+            # Icon en Labels
+            l1 = ctk.CTkLabel(btn, text=info["icon"], font=("Arial Bold", 70), text_color="white")
             l1.grid(row=0, column=0, pady=(30, 0))
             
-            l2 = ctk.CTkLabel(btn, text=label, font=("Arial Bold", 22), text_color="white")
+            l2 = ctk.CTkLabel(btn, text=methode, font=("Arial Bold", 22), text_color="white")
             l2.grid(row=1, column=0, pady=(5, 0))
             
-            l3 = ctk.CTkLabel(btn, text=t_txt, font=("Arial Bold", 18), text_color="white")
+            l3 = ctk.CTkLabel(btn, text=fmt(info["sec"]), font=("Arial Bold", 18), text_color="white")
             l3.grid(row=2, column=0, pady=(0, 30))
- 
+
+            # Zorg dat klikken op tekst ook de knop activeert
             for lbl in [l1, l2, l3]:
                 lbl.bind("<Button-1>", lambda e, b=btn: b.invoke())
- 
+
         self.drying_frame.grid(row=0, column=1, sticky="nsew")
- 
     # ─────────────────────────────────────────
     #  SCHERM 4 – BEVESTIGING
     # ─────────────────────────────────────────
@@ -976,7 +978,7 @@ class LaundryApp(ctk.CTk):
             self.confirm_frame, text="START TIMER",
             fg_color=kleur, hover_color=h_col, height=70, width=500,
             corner_radius=20, font=("Arial Bold", 24), text_color="white",
-            command=lambda: self.start_timer_and_show_dashboard(was_type, methode, seconden)
+            command=lambda: self.start_timer(was_type, methode, seconden)
         ).pack(pady=40)
 
         self.confirm_frame.grid(row=0, column=1, sticky="nsew")
@@ -989,50 +991,65 @@ class LaundryApp(ctk.CTk):
         self.hide_all()
         for w in self.timer_frame.winfo_children():
             w.destroy()
- 
+
         # Grote tikkende klok
         self.time_label = ctk.CTkLabel(
             self.timer_frame, text="",
             font=("Arial Bold", 80), text_color=self.text_blue
         )
-        self.time_label.pack(pady=(40, 20))
- 
-        # Info-kaarten
-        info = ctk.CTkFrame(self.timer_frame, fg_color="transparent")
-        info.pack(fill="x", padx=100)
-        info.grid_columnconfigure((0, 1), weight=1)
- 
-        def make_card(master, icon, txt, col, row, col_idx, colspan=1):
-            f = ctk.CTkFrame(master, fg_color="white", corner_radius=15, height=70)
-            f.grid(row=row, column=col_idx, columnspan=colspan,
-                   sticky="nsew", padx=10, pady=10)
-            ctk.CTkLabel(f, text=f"{icon}  {txt}",
-                         font=("Arial Bold", 20), text_color=col).pack(expand=True)
- 
-        icon_m  = {"Buiten": "🌲", "Binnen": "🏠"}.get(methode, "🌀")
-        color_m = self.accent_green if methode == "Buiten" else self.accent_orange
-        make_card(info, icon_m, methode, color_m, 0, 0)
- 
-        icon_w = {"Licht": "🪶", "Gemiddeld": "👕"}.get(was_type, "👖")
-        make_card(info, icon_w, was_type, "blue", 0, 1)
- 
+        self.time_label.pack(pady=(80, 10))
+
+        # --- ÉÉN GROOT WIT VAK (Tabel layout) ---
+        table_frame = ctk.CTkFrame(self.timer_frame, fg_color="white", corner_radius=20)
+        table_frame.pack(fill="both", expand=True, padx=80, pady=20)
+        
+        # Grid configuratie voor de tabel
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(1, weight=1)
+
+        def add_table_row(row, label_left, value_left, label_right=None, value_right=None, is_last=False):
+            # Linker kolom data
+            ctk.CTkLabel(table_frame, text=f"{label_left} {value_left}", 
+                         font=("Arial Bold", 18), text_color="black").grid(row=row, column=0, pady=15)
+            
+            # Rechter kolom data (indien aanwezig)
+            if label_right:
+                ctk.CTkLabel(table_frame, text=f"{label_right} {value_right}", 
+                             font=("Arial Bold", 18), text_color="black").grid(row=row, column=1, pady=15)
+            
+            # Teken een scheidingslijn als het niet de laatste rij is
+            if not is_last:
+                line = ctk.CTkFrame(table_frame, height=1, fg_color="#E0E0E0")
+                line.grid(row=row, column=0, columnspan=2, sticky="swe", padx=20)
+
+        # Voorbereiden van de data
+        icon_m = {"Buiten": "🌲", "Binnen": "🏠"}.get(methode, "🌀")
+        icon_w = {"Licht": "🪶", "Gemiddeld": "👕"}.get(was_type.replace(" was", ""), "👖")
+        
+        # Rij 1: Methode en Was-type
+        add_table_row(0, icon_m, methode, icon_w, was_type)
+
+        # Rij 2: Sensordata (Live gecorrigeerd)
         if methode == "Buiten":
-            make_card(info, "☀️",  self.huidige_temp,       "orange",   1, 0, colspan=2)
-            make_card(info, "🌧️", "GEEN regen verwacht",   "#3498db",  2, 0, colspan=2)
-        elif methode == "Binnen":
+            neerslag = getattr(self, 'huidige_neerslag', 0)
+            regen_status = "Geen regen" if neerslag == 0 else f"{neerslag}mm regen"
+            add_table_row(1, "☀️", self.huidige_temp, "🌧️", regen_status, is_last=True)
+        else:
             binnen = self.get_internal_sensor_data()
-            make_card(info, "🌡️", f"{binnen['temp']}°C",   "#e67e22",  1, 0, colspan=2)
-            make_card(info, "💧", f"{binnen['vocht']}%",   "#2980b9",  2, 0, colspan=2)
- 
+            add_table_row(1, "🌡️", f"{binnen['temp']}°C", "💧", f"{binnen['vocht']}%", is_last=True)
+
+        # Annuleer knop onder het witte vak
         ctk.CTkButton(
             self.timer_frame, text="ANNULEREN",
             fg_color="#4a5568", hover_color="#2d3748",
-            height=60, width=500, corner_radius=15,
+            height=50, width=400, corner_radius=15,
             font=("Arial Bold", 18), text_color="white",
             command=lambda: self.confirm_cancel(was_type, methode)
-        ).pack(pady=30)
- 
+        ).pack(pady=(10, 30))
+
+        # Timer starten
         self.remaining_sec = seconden
+        self.add_timer(methode, was_type, seconden)
         self._tick()
         self.timer_frame.grid(row=0, column=1, sticky="nsew")
  
@@ -1050,9 +1067,15 @@ class LaundryApp(ctk.CTk):
             ):
                 self.popup_time_label.configure(text=tijd_str)
             self.remaining_sec -= 1
+            # Sync met actieve_timers zodat het timerscherm klopt
+            if self.actieve_timers:
+                self.actieve_timers[-1]["resterend"] = self.remaining_sec
             self.current_timer = self.after(1000, self._tick)
         else:
             self.time_label.configure(text="00:00:00")
+            # Timer klaar: verwijder uit de lijst
+            if self.actieve_timers:
+                self.actieve_timers.pop()
             self._timer_klaar()
  
     def _timer_klaar(self):
@@ -1101,37 +1124,50 @@ class LaundryApp(ctk.CTk):
     def show_timers_screen(self):
         self.hide_all()
         self.current_screen = "timers"
-        self.timer_ui_elements = {}
+        self.timer_ui_elements = {} # Reset de referenties voor de nieuwe widgets
 
         for w in self.timer_frame.winfo_children(): 
             w.destroy()
 
-        # 1. Maak de scrollbox ÉÉN keer aan, BUITEN de loop
-        scroll = ctk.CTkScrollableFrame(self.timer_frame, fg_color="transparent", width=700, height=400)
-        scroll.pack(expand=True, fill="both", padx=50, pady=20)
+        # Titel
+        ctk.CTkLabel(self.timer_frame, text="Timers:", font=("Arial Bold", 32), text_color="black").pack(pady=(80, 10))
 
-        for i, timer in enumerate(self.actieve_timers):
-            stijl = self.METHODE_STYLING.get(timer["methode"], {"icoon": "⏳", "kleur": "gray"})
-            
-            # 2. Voeg de kaart toe aan 'scroll'
-            card = ctk.CTkFrame(scroll, fg_color="white", corner_radius=20, height=100)
-            card.pack(fill="x", pady=10, padx=10)
-            card.pack_propagate(False)
+        # Check of de lijst leeg is[cite: 1]
+        if not self.actieve_timers:
+            ctk.CTkLabel(self.timer_frame, text="Nog geen timers ingesteld.", font=("Arial", 20), text_color="#4a5568").pack(expand=True)
+        else:
+            scroll = ctk.CTkScrollableFrame(self.timer_frame, fg_color="transparent", width=700, height=350)
+            scroll.pack(expand=True, fill="both", padx=50, pady=20)
 
-            ctk.CTkLabel(card, text=stijl["icoon"], font=("Arial", 40), text_color=stijl["kleur"]).pack(side="left", padx=20)
-            ctk.CTkLabel(card, text=f"{timer['methode']} - {timer['was_type']}", 
-                         font=("Arial Bold", 16), text_color="black").pack(side="left")
+            # Bouw de widgets voor ELKE actieve timer opnieuw op[cite: 1]
+            for i, timer in enumerate(self.actieve_timers):
+                stijl = self.METHODE_STYLING.get(timer["methode"], {"icoon": "⏳", "kleur": "gray"})
+                
+                card = ctk.CTkFrame(scroll, fg_color="white", corner_radius=20, height=100)
+                card.pack(fill="x", pady=10, padx=10)
+                card.pack_propagate(False)
 
-            pb = ctk.CTkProgressBar(card, width=200, progress_color=stijl["kleur"])
-            pb.pack(side="left", padx=20)
-            pb.set(0) # Startwaarde
-            
-            lbl_tijd = ctk.CTkLabel(card, text="00:00:00", font=("Consolas", 20, "bold"), text_color="black")
-            lbl_tijd.pack(side="right", padx=20)
+                ctk.CTkLabel(card, text=stijl["icoon"], font=("Arial", 40), text_color=stijl["kleur"]).pack(side="left", padx=20)
+                
+                info_text = f"{timer['methode']} - {timer['was_type']}"
+                ctk.CTkLabel(card, text=info_text, font=("Arial Bold", 16), text_color="black").pack(side="left")
 
-            self.timer_ui_elements[i] = {"pb": pb, "tijd": lbl_tijd}
+                pb = ctk.CTkProgressBar(card, width=200, progress_color=stijl["kleur"])
+                pb.pack(side="left", padx=20)
+                
+                # Bereken start-progressie[cite: 1]
+                progress = (timer["totaal"] - timer["resterend"]) / timer["totaal"]
+                pb.set(progress)
+                
+                lbl_tijd = ctk.CTkLabel(card, text="00:00:00", font=("Consolas", 20, "bold"), text_color="black")
+                lbl_tijd.pack(side="right", padx=20)
+
+                # Sla de referenties op zodat de achtergrond-loop ze kan vinden[cite: 1]
+                self.timer_ui_elements[i] = {"pb": pb, "tijd": lbl_tijd}
             
         self.timer_frame.grid(row=0, column=1, sticky="nsew")
+        self.update_sidebar_selection("timer")
+        # Update direct de tekst van de klokjes[cite: 1]
         self.refresh_timer_display()
  
     # ─────────────────────────────────────────
@@ -1224,10 +1260,10 @@ class LaundryApp(ctk.CTk):
             },
         ]
 
-        # 7. UI Tekenen (Titel en Tabel)
+       
         # 7. UI Tekenen (Titel en Tabel)
         titel_container = ctk.CTkFrame(inner, fg_color="transparent")
-        titel_container.grid(row=0, column=0, columnspan=3, pady=(60, 30))
+        titel_container.grid(row=0, column=0, columnspan=3, pady=(80, 30))
         
         ctk.CTkLabel(
             titel_container, 
