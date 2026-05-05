@@ -321,7 +321,7 @@ class LaundryApp(ctk.CTk):
  
     def _fetch_weather(self, lat, lon):
         try:
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&hourly=relative_humidity_2m,precipitation&forecast_days=1"
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&hourly=relative_humidity_2m,precipitation&forecast_days=3"
             response = requests.get(url, timeout=5)
             data = response.json()
         
@@ -334,12 +334,13 @@ class LaundryApp(ctk.CTk):
                 "temp":     current["temperature"],
                 "code":     int(current["weathercode"]),
                 "humidity": data["hourly"]["relative_humidity_2m"][huidig_uur],
-                "precip":   data["hourly"]["precipitation"][huidig_uur]
+                "precip":   data["hourly"]["precipitation"][huidig_uur],
+                "precip_uurlijks": data["hourly"]["precipitation"]
             }
         except Exception as e:
             print(f"Weather error: {e}")
-            return {"temp": 15, "code": 0, "humidity": 60, "precip": 0}
- 
+            return {"temp": 15, "code": 0, "humidity": 60, "precip": 0, "precip_uurlijks": [0] * 72}
+
     def _apply_weather(self, locatie, weer_data):
         if isinstance(weer_data, dict):
             self.locatie = locatie
@@ -347,9 +348,10 @@ class LaundryApp(ctk.CTk):
             self.huidige_temp = f"{weer_data.get('temp', 15)}°C"
             self.huidige_vocht_buiten = weer_data.get("humidity", 60)
             self.huidige_neerslag = weer_data.get("precip", 0)
+            self.neerslag_uurlijks = weer_data.get("precip_uurlijks", [0] * 72)
         else:
             self.weer_code = 0
-
+            self.neerslag_uurlijks = [0] * 72
         # Update alleen de labels, herbouw NIET het hele scherm
         if hasattr(self, 'stad_label'):
             self.stad_label.configure(text=self.locatie.get("city", DEFAULT_CITY))
@@ -498,8 +500,7 @@ class LaundryApp(ctk.CTk):
         
         # Als het regent of gaat regenen, zet de tijd op "onmogelijk" (999 uur)
         # Zo wordt het in bepaal_beste_optie direct naar de laatste plek verwezen.
-        if getattr(self, 'huidige_neerslag', 0) > 0:
-            sec_buiten = 999 * 3600
+       
 
         # 2. Binnen berekenen
         sec_binnen = int(self.bereken_droogtijd(
@@ -565,9 +566,14 @@ class LaundryApp(ctk.CTk):
         # 1. Controleer of BUITEN mogelijk is
         # Regels: niet regenen (weercode < 51), geen neerslag in API, en tijd < 10 uur
         is_aan_het_regenen = self.weer_code >= 51
-        gaat_regenen = getattr(self, 'huidige_neerslag', 0) > 0
-        tijd_ok_buiten = (sec_buiten / 3600) <= 10
 
+        huidig_uur = datetime.now().hour
+        droogtijd_uur = max(1, round(sec_buiten / 3600))
+        neerslag_lijst = getattr(self, 'neerslag_uurlijks', [0] * 72)
+        interval_einde = min(huidig_uur + droogtijd_uur, len(neerslag_lijst))
+        gaat_regenen = any(n > 0 for n in neerslag_lijst[huidig_uur:interval_einde])
+
+        tijd_ok_buiten = (sec_buiten / 3600) <= 10
         buiten_mogelijk = not is_aan_het_regenen and not gaat_regenen and tijd_ok_buiten
 
         # 2. Controleer of BINNEN mogelijk is
@@ -876,7 +882,7 @@ class LaundryApp(ctk.CTk):
 
         def fmt(s: int) -> str:
             # Als de tijd de strafscore heeft (99u of meer), toon "Niet mogelijk"
-            if s >= 300000: return "Niet mogelijk"
+            
             return f"~{s // 3600}u {(s % 3600) // 60}m"
 
         # Kleuren toewijzen op basis van RANK (0=Groen, 1=Oranje, 2=Rood)
@@ -1214,6 +1220,12 @@ class LaundryApp(ctk.CTk):
         tijd_droger = round(sec_kast / 3600, 1)
 
         # 6. Data lijst configureren
+        tijden = {
+            "Buiten": tijd_buiten,
+            "Binnen": tijd_binnen,
+            "Droger": tijd_droger
+        }
+        snelste_id = min(tijden, key=tijden.get)
         # We passen hier de vochtigheid en de regen-uitleg aan
         regen_tekst = "Droog voorspeld"
         regen_kleur = "transparent"
@@ -1223,18 +1235,20 @@ class LaundryApp(ctk.CTk):
         elif tijd_buiten > 10:
             regen_tekst = "Te traag buiten"
             regen_kleur = "#f39c12"
+        droogkast_kost = self.live_energieprijs * 2.5
+        kost_bg_kleur = "#ff3b3b" if droogkast_kost > 0 else "#27ae60"
 
         data_lijst = [
             {
                 "id":   "Buiten",
                 "t":    "Buiten drogen",
-                "d":    "NIET MOGELIJK" if tijd_buiten > 50 else f"droogtijd {tijd_buiten}u",
+                "d":    f"droogtijd {tijd_buiten}u",
                 "k":    "Gratis",
                 "temp": self.huidige_temp,
                 "v":    f"vocht {v_buiten}%", # LIVE VOCHT
                 "ex":   regen_tekst,          # REGEN DATA[cite: 2]
                 "ex_c": regen_kleur,
-                "h":    ranking_namen[0] == "Buiten",
+                "h":    snelste_id == "Buiten",
             },
             {
                 "id":   "Binnen",
@@ -1245,18 +1259,19 @@ class LaundryApp(ctk.CTk):
                 "v":    f"vocht {binnen['vocht']}%",
                 "ex":   "Lucht te vochtig" if binnen['vocht'] > 65 else "Sensor data Pi",
                 "ex_c": "#f39c12" if binnen['vocht'] > 65 else "transparent",
-                "h":    ranking_namen[0] == "Binnen",
+                "h":    snelste_id == "Binnen",
             },
             {
                 "id":   "Droger",
                 "t":    "Droogkast",
                 "d":    f"droogtijd {tijd_droger}u",
                 "k":    f"kost: €{self.live_energieprijs * 2.5:.2f}",
+                "k_bg": kost_bg_kleur,
                 "temp": "/",
                 "v":    "/",
                 "ex":   f"Stroom: €{self.live_energieprijs}/kWh",
                 "ex_c": "transparent",
-                "h":    ranking_namen[0] == "Droger",
+                "h":    snelste_id == "Droger",
             },
         ]
 
@@ -1287,6 +1302,7 @@ class LaundryApp(ctk.CTk):
         )
         self.stof_button.pack(side="left", padx=10)
 
+        
         for i, item in enumerate(data_lijst):
             col = ctk.CTkFrame(inner, fg_color="transparent")
             col.grid(row=1, column=i, sticky="nsew", padx=10)
@@ -1301,9 +1317,10 @@ class LaundryApp(ctk.CTk):
 
             ctk.CTkLabel(col, text=item["d"], font=("Arial", 18), text_color=tijd_fg, 
                          fg_color=tijd_bg, corner_radius=6, width=170, height=35).pack(pady=5)
-
+            
+            huidige_kost_bg = item.get("k_bg", "#27ae60")
             ctk.CTkLabel(col, text=item["k"], font=("Arial Bold", 18), text_color="white", 
-                         fg_color="#27ae60", corner_radius=6, width=180, height=35).pack(pady=15)
+                         fg_color=huidige_kost_bg, corner_radius=6, width=180, height=35).pack(pady=15)
 
             ctk.CTkLabel(col, text=item["temp"], font=("Arial", 18), text_color="black").pack()
             ctk.CTkLabel(col, text=item["v"], font=("Arial", 18), text_color="black").pack(pady=5)
