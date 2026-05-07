@@ -175,6 +175,9 @@ class LaundryApp(ctk.CTk):
         self.sidebar_buttons = {}
         self.sidebar_visible = True
         self.popup_time_label = None
+        self._last_motion_time = time.monotonic()
+        self._overlay_visible = False
+        self._dim_overlay = None
  
         # Snelkoppelingen naar kleuren
         for k, v in self.KLEUREN.items():
@@ -277,6 +280,10 @@ class LaundryApp(ctk.CTk):
  
         # ── Weerdata laden op achtergrond ───────
         threading.Thread(target=self._load_weather_async, daemon=True).start()
+
+        # ── Motion overlay loop ────────────────
+        self._init_dim_overlay()
+        self._motion_overlay_loop()
  
     def on_closing(self):
         """Veilig afsluiten: annuleer actieve timer en sluit sensoren."""
@@ -438,6 +445,52 @@ class LaundryApp(ctk.CTk):
             "geluid": geluid,
             "motion": motion,
         }
+
+    def _init_dim_overlay(self):
+        if self._dim_overlay is not None:
+            return
+        self._dim_overlay = ctk.CTkToplevel(self)
+        self._dim_overlay.overrideredirect(True)
+        self._dim_overlay.attributes("-fullscreen", True)
+        self._dim_overlay.attributes("-topmost", True)
+        self._dim_overlay.attributes("-alpha", 1.0)
+        self._dim_overlay.configure(fg_color="black")
+        self._dim_overlay.withdraw()
+
+    def _show_overlay(self):
+        if self._dim_overlay is None or self._overlay_visible:
+            return
+        self._dim_overlay.deiconify()
+        self._dim_overlay.lift()
+        self._overlay_visible = True
+
+    def _hide_overlay(self):
+        if self._dim_overlay is None or not self._overlay_visible:
+            return
+        self._dim_overlay.withdraw()
+        self._overlay_visible = False
+
+    def _motion_overlay_loop(self):
+        if not self.gpio_available:
+            self._hide_overlay()
+            self.after(1000, self._motion_overlay_loop)
+            return
+
+        try:
+            motion_state = int(GPIO.input(MOTION_BCM_PIN))
+        except Exception:
+            motion_state = 0
+
+        if motion_state == 1:
+            self._last_motion_time = time.monotonic()
+            if self._overlay_visible:
+                self._hide_overlay()
+        else:
+            idle_time = time.monotonic() - self._last_motion_time
+            if idle_time >= 30:
+                self._show_overlay()
+
+        self.after(500, self._motion_overlay_loop)
 
     
     def fetch_energy_prices(self):
