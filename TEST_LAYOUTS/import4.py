@@ -426,10 +426,10 @@ class LaundryApp(ctk.CTk):
         if self._dht_read is not None and now >= self._next_dht_time:
             self._next_dht_time = now + 2.0
             try:
-                hum, temp = self._dht_read()
+                hum, temp = self._dht_read() 
                 if hum is not None and temp is not None:
                     self._last_hum  = hum
-                    self._last_temp = temp
+                    self._last_temp = temp - 12.0  # Kalibratie-offset
             except Exception as e:
                 if not self._dht_error_reported:
                     print(f"DHT driver fout: {e}")
