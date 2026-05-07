@@ -449,25 +449,22 @@ class LaundryApp(ctk.CTk):
     def _init_dim_overlay(self):
         if self._dim_overlay is not None:
             return
-        self._dim_overlay = ctk.CTkToplevel(self)
-        self._dim_overlay.overrideredirect(True)
-        self._dim_overlay.attributes("-fullscreen", True)
-        self._dim_overlay.attributes("-topmost", True)
-        self._dim_overlay.attributes("-alpha", 1.0)
-        self._dim_overlay.configure(fg_color="black")
-        self._dim_overlay.withdraw()
+        self._dim_overlay = ctk.CTkFrame(self, fg_color="black")
+        self._dim_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._dim_overlay.lift()
+        self._dim_overlay.place_forget()
 
     def _show_overlay(self):
         if self._dim_overlay is None or self._overlay_visible:
             return
-        self._dim_overlay.deiconify()
         self._dim_overlay.lift()
+        self._dim_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self._overlay_visible = True
 
     def _hide_overlay(self):
         if self._dim_overlay is None or not self._overlay_visible:
             return
-        self._dim_overlay.withdraw()
+        self._dim_overlay.place_forget()
         self._overlay_visible = False
 
     def _motion_overlay_loop(self):
