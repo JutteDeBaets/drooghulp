@@ -167,6 +167,7 @@ class LaundryApp(ctk.CTk):
         self.title("Laundry Dashboard")
         self.geometry("800x480")
         self.attributes("-fullscreen", True)
+        self.attributes("-alpha", 1.0)
  
         self.actieve_timers = []
         self.current_screen = None  # Cruciaal: dit voorkomt de AttributeError
@@ -175,6 +176,10 @@ class LaundryApp(ctk.CTk):
         self.sidebar_buttons = {}
         self.sidebar_visible = True
         self.popup_time_label = None
+        self._current_alpha = 1.0
+        self._last_motion_time = time.monotonic()
+        self._is_dimmed = False
+        self._fade_after_id = None
  
         # Snelkoppelingen naar kleuren
         for k, v in self.KLEUREN.items():
@@ -277,6 +282,9 @@ class LaundryApp(ctk.CTk):
  
         # ── Weerdata laden op achtergrond ───────
         threading.Thread(target=self._load_weather_async, daemon=True).start()
+
+        # ── Motion fade loop ───────────────────
+        self._motion_fade_loop()
  
     def on_closing(self):
         """Veilig afsluiten: annuleer actieve timer en sluit sensoren."""
@@ -455,6 +463,57 @@ class LaundryApp(ctk.CTk):
             "geluid": geluid,
             "motion": motion,
         }
+
+    def _read_motion_state(self):
+        if not self.gpio_available:
+            return None
+        try:
+            return int(GPIO.input(MOTION_BCM_PIN))
+        except Exception:
+            return None
+
+    def _fade_to(self, target_alpha, steps=10, step_ms=30):
+        if self._fade_after_id is not None:
+            try:
+                self.after_cancel(self._fade_after_id)
+            except Exception:
+                pass
+            self._fade_after_id = None
+
+        start_alpha = self._current_alpha
+        delta = (target_alpha - start_alpha) / max(1, steps)
+
+        def _step(i=1):
+            new_alpha = start_alpha + delta * i
+            self._current_alpha = new_alpha
+            self.attributes("-alpha", new_alpha)
+            if i < steps:
+                self._fade_after_id = self.after(step_ms, _step, i + 1)
+            else:
+                self._fade_after_id = None
+
+        _step()
+
+    def _motion_fade_loop(self):
+        if not self.gpio_available:
+            if self._current_alpha != 1.0:
+                self._fade_to(1.0)
+            self.after(1000, self._motion_fade_loop)
+            return
+
+        motion_state = self._read_motion_state()
+        if motion_state == 1:
+            self._last_motion_time = time.monotonic()
+
+        idle_time = time.monotonic() - self._last_motion_time
+        if idle_time >= 30 and not self._is_dimmed:
+            self._fade_to(0.05)
+            self._is_dimmed = True
+        elif idle_time < 30 and self._is_dimmed:
+            self._fade_to(1.0)
+            self._is_dimmed = False
+
+        self.after(500, self._motion_fade_loop)
     
     def fetch_energy_prices(self):
         try:
