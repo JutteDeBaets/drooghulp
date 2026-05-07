@@ -1369,6 +1369,10 @@ class LaundryApp(ctk.CTk):
         debug_win.title("Sensor Debugger")
         debug_win.geometry("400x300")
         debug_win.attributes("-topmost", True)
+        debug_win.transient(self)
+        debug_win.lift()
+        debug_win.focus_force()
+        debug_win.grab_set()
 
         info_label = ctk.CTkLabel(debug_win, text="", font=("Consolas", 14), justify="left")
         info_label.pack(pady=20)
