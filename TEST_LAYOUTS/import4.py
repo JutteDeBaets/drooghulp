@@ -1371,6 +1371,7 @@ class LaundryApp(ctk.CTk):
         info_label = ctk.CTkLabel(debug_win, text="", font=("Consolas", 14), justify="left")
         info_label.pack(pady=20)
         ctk.CTkButton(debug_win, text="Sluit", command=debug_win.destroy).pack(pady=10)
+        ctk.CTkButton(debug_win, text="close interface", command=self.on_closing).pack(pady=10)
 
         def _refresh():
             if not debug_win.winfo_exists():
