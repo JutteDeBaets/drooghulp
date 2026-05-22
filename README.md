@@ -1,6 +1,6 @@
 # 🌲 Drooghulp
 
-Een slim dashboard op de Raspberry Pi dat je helpt beslissen **waar je het beste je was hangt te drogen** — buiten, binnen of in de droogkast. De app combineert live weerdata, sensormetingen en energieprijzen om een aanbeveling te geven.
+Een slim dashboard op de Raspberry Pi dat je helpt beslissen **waar je het beste je was hangt te drogen**: buiten, binnen of in de droogkast. De app combineert live weerdata, sensormetingen en energieprijzen om een aanbeveling te geven.
 
 ---
 
@@ -32,27 +32,21 @@ Een slim dashboard op de Raspberry Pi dat je helpt beslissen **waar je het beste
 
 ```
 drooghulp/
-├── TEST_LAYOUTS/
+├── TEST_LAYOUTS/        # Tussenversies van de UI (ontwikkelingshistorie)
 │   ├── TEST2.py
 │   ├── TEST_IMPORT.py
 │   ├── TEST_IMPORT2.py
 │   ├── Test_LAYOUT.py
 │   ├── import3.py
-│   └── import5.py  
-├── main.py              # Hoofdapplicatie (eindversie)
+│   └── import5.py 
+├── .gitignore.md
+├── README.md
 ├── hardware_test.py     # Losse hardware test (GPIO/sensoren)
+├── main.py              # Hoofdapplicatie (eindversie)
 ├── motion_test.py       # Losse test voor de bewegingssensor
-├── assets/
-│   ├── tree.png
-│   └── lamp.png
-├── tests/               # Tussenversies van de UI (ontwikkelingshistorie)
-│   ├── TEST2.py
-│   ├── Test_LAYOUT.py
-│   ├── import3.py
-│   └── import5.py
-├── requirements.txt
 ├── pyproject.toml
-└── README.md
+└── requirements.txt
+
 ```
 
 ---
@@ -110,5 +104,5 @@ Op een gewone pc start de app automatisch in **testmodus** — alle sensorwaarde
 
 ## Ontwikkeld door
 
-Project gemaakt in het kader van Opkomende Technologieën — opleiding Industrieel Ingenieur: Industrieel Ontwerpen aan de UGent.
+Project gemaakt in het kader van Opkomende Technologieën, opleiding Industrieel Ingenieur: Industrieel Ontwerpen aan de UGent.
 Hardware-integratie: Jutte De Baets — UI & logica: Djurre Roose
