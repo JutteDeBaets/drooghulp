@@ -32,6 +32,13 @@ Een slim dashboard op de Raspberry Pi dat je helpt beslissen **waar je het beste
 
 ```
 drooghulp/
+├── TEST_LAYOUTS/
+│   ├── TEST2.py
+│   ├── TEST_IMPORT.py
+│   ├── TEST_IMPORT2.py
+│   ├── Test_LAYOUT.py
+│   ├── import3.py
+│   └── import5.py  
 ├── main.py              # Hoofdapplicatie (eindversie)
 ├── hardware_test.py     # Losse hardware test (GPIO/sensoren)
 ├── motion_test.py       # Losse test voor de bewegingssensor
