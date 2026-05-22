@@ -105,4 +105,4 @@ Op een gewone pc start de app automatisch in **testmodus** — alle sensorwaarde
 ## Ontwikkeld door
 
 Project gemaakt in het kader van Opkomende Technologieën, opleiding Industrieel Ingenieur: Industrieel Ontwerpen aan de UGent.
-Hardware-integratie: Jutte De Baets — UI & logica: Djurre Roose
+Hardware-integratie: Jutte De Baets. UI & logica: Djurre Roose.
